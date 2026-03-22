@@ -1,0 +1,4 @@
+Things yet to include:
+
+1. ATR based stoploss
+2. High and low based simulation to observe effects of stoploss hunting and whipsaws 

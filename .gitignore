@@ -1,0 +1,11 @@
+/myenv
+/package.json
+/package-lock.json
+/node_modules
+/__pycache__
+/logs
+.env
+.secrets/
+__pycache__
+.vscode/
+/data
