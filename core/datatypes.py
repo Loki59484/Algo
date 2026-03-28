@@ -165,11 +165,14 @@ class Trade:
     movement: float = 0
     PnL: float = 0
     remark: str = ""
+    stoploss : float | None = None
+    target : float | None = None
+    buy_adx : float | None = None
 
     @classmethod
     def from_candle(
         cls,
-        candle: Candle,
+        candle,
         qty: int,
         id: str = "111",
     ):
@@ -193,8 +196,9 @@ class Trade:
             timestamp=candle.timestamp,
             buy_price=candle.close,
             buy_qty=qty,
+            buy_adx=candle.ADXR_14_2
         )
-
+            
     def close_trade(self, price: float, qty: int, remark: str = ""):
         """Closes an open trade using a sell order
 
@@ -206,7 +210,7 @@ class Trade:
         self.sell_qty = qty
         self.movement = self.sell_price - self.buy_price
         self.PnL = self.sell_qty * self.movement
-        self.remark = ""
+        self.remark = remark
 
 
 @dataclass(slots=True)
@@ -244,6 +248,7 @@ class Position:
                     "Movement": [trade.movement for trade in self.trades],
                     "PnL": [trade.PnL for trade in self.trades],
                     "Remark": [trade.remark for trade in self.trades],
+                    "ADX": [trade.buy_adx for trade in self.trades]
                 }
             )
         return self.report
@@ -341,6 +346,7 @@ class Instrument:
                         loaded_instruments.append(inst)
                 except Exception as e:
                     logger.exception(f"Failed to load instrument in parallel: {e}")
+        loaded_instruments.sort(key=lambda inst: inst.key)
         logger.debug("Instruments loaded successfully.")
         return loaded_instruments
 
@@ -493,5 +499,5 @@ class Instrument:
             }
         )
         self.historical_df.set_index("timestamp", inplace=True)
-
+        self.historical_df.sort_index()
         return self.historical_df

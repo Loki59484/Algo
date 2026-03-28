@@ -102,10 +102,10 @@ class Strategy:
             Parameter to specify any other constraints to excercise while placing a buy order.
         sell_constraints: Callable[[Any], bool], optional
             Parameter to specify any other constraints to excercise while placing a sell order.
-        self.custom_test 
+        self.custom_test
             A custom test procedure provided as a functools.partial. This is called inside the `Trader.test()`
             instead of the internal test procedure.
-        
+
     Yields
     --------
     Strategy
@@ -140,7 +140,7 @@ class Strategy:
             return
 
     @classmethod
-    def apply_study(cls,target : pd.DataFrame,study : ta.Study,**kwargs):
+    def apply_study(cls, target: pd.DataFrame, study: ta.Study, **kwargs):
         """
         Applies the given study to the provided target.
 
@@ -157,8 +157,8 @@ class Strategy:
         None
         """
         target.ta.study(study)
-        buy_cond = kwargs.get("buy_condition",None)
-        sell_cond = kwargs.get("sell_condition",None)
+        buy_cond = kwargs.get("buy_condition", None)
+        sell_cond = kwargs.get("sell_condition", None)
 
         if buy_cond is not None:
             target["buy_signal"] = buy_cond(target, **kwargs)
@@ -169,9 +169,8 @@ class Strategy:
             target["sell_signal"] = sell_cond(target, **kwargs)
         else:
             target["sell_signal"] = False
-        
-        return target
 
+        return target
 
     def apply(self, target: pd.DataFrame, **kwargs):
         """
@@ -192,7 +191,7 @@ class Strategy:
 
         if self.indicators and self.indicators.ta:
             target.ta.study(self.indicators)
-        
+
         if self.buy_conditon:
             target["buy_signal"] = self.buy_conditon(target, **kwargs)
         else:
@@ -202,7 +201,7 @@ class Strategy:
             target["sell_signal"] = self.sell_condition(target, **kwargs)
         else:
             target["sell_signal"] = False
-        
+
         return target
 
 
@@ -219,7 +218,7 @@ class Bucket:
     spot: Instrument | None = None
     legs: dict[str, Instrument] = field(default_factory=dict)
     margin: float = 0
-    open_position : Position | None = None
+    open_position: Position | None = None
 
     def add_leg(self, item: Instrument | dict[str, Instrument], leg_type):
         """Adds Instrument instances as legs to a bucket object.
@@ -252,30 +251,37 @@ class Trader:
 
     @property
     def trade_report(self, verbose: bool = True):
-        if self._trade_report is None:
-            df = pd.concat(
-                [
-                    subject.position.trade_report()
-                    for subject in self.instruments.values()
-                ],
-                ignore_index=True,
-            )
-            self._trade_report = df.sort_values(by="Timestamp").reset_index(drop=True)
-        if verbose:
-            print(self._trade_report.round(2).to_markdown(tablefmt="pretty"))
-            print(f"Total Movement: {self._trade_report['Movement'].sum():.2f}")
-            print(f"Final PnL: {self._trade_report['PnL'].sum():.2f}")
-            logger.info(f"Final Results:\n{self._trade_report.round(2).to_markdown(tablefmt="pretty")}")
-            logger.info(f"Total Movement: {self._trade_report['Movement'].sum():.2f}")
-            logger.info(f"Final PnL: {self._trade_report['PnL'].sum():.2f}")
+        try:
+            if self._trade_report is None:
+                df = pd.concat(
+                    [
+                        subject.position.trade_report()
+                        for subject in self.instruments.values()
+                    ],
+                    ignore_index=True,
+                )
+                self._trade_report = df.sort_values(by="Timestamp").reset_index(
+                    drop=True
+                )
+            if verbose:
+                # self._trade_report.drop(columns='ID').to_csv(ustox.LOG_DIR/str(os.getpid()))
+                print(self._trade_report.round(2).to_markdown(tablefmt="pretty"))
+                print(f"Total Movement: {self._trade_report['Movement'].sum():.2f}")
+                print(f"Final PnL: {self._trade_report['PnL'].sum():.2f}")
+                logger.info(
+                    f"Final Results:\n{self._trade_report.round(2).to_markdown(tablefmt="pretty")}"
+                )
+                logger.info(
+                    f"Total Movement: {self._trade_report['Movement'].sum():.2f}"
+                )
+                logger.info(f"Final PnL: {self._trade_report['PnL'].sum():.2f}")
+        except Exception:
+            logger.exception("Could not generate trade report")
 
-        
         return self._trade_report
 
     def calculate_units(self, balance, close, lot_size):
-        return max(
-            0, int((balance / close) - ((balance / close) % lot_size))
-        )
+        return max(0, int((balance / close) - ((balance / close) % lot_size)))
 
     def add_instrument(self, item: Instrument | dict[str, Instrument]):
         if isinstance(item, dict):
@@ -289,20 +295,29 @@ class Trader:
 
     def execute_buy(self, tick: Candle, instrument: Instrument, margin: float):
         order_id = str(random.randint(10**11, 10**12 - 1))
-        qty = self.calculate_units(balance=margin,close=tick.close,lot_size=instrument.lot_size)
+        qty = self.calculate_units(
+            balance=margin, close=tick.close, lot_size=instrument.lot_size
+        )
         trade = Trade.from_candle(qty=qty, id=order_id, candle=tick)
         instrument.position.open_position(trade=trade)
         logger.info(f"Buy order placed for {qty} at {tick.close}")
 
     def execute_sell(
-        self, tick: Tick, trade: Trade, instrument: Instrument, qty=None,**kwargs
+        self,
+        tick,
+        trade: Trade,
+        instrument: Instrument,
+        qty=None,
+        exit_price: float | None = None,
+        **kwargs,
     ):
         qty = trade.buy_qty if qty is None else qty
+        price = exit_price if not exit_price is None else tick.close
         trade.close_trade(
-            tick.close, qty=trade.buy_qty, remark=kwargs.get("remark", "")
+            price=price, qty=trade.buy_qty, remark=kwargs.get("remark", "")
         )
         instrument.position.close_position()
-        logger.info(f"Sell order placed for {trade.buy_price} at {tick.close}")
+        logger.info(f"Sell order placed for {trade.buy_price} at {price}")
 
     def test(
         self,
@@ -342,7 +357,7 @@ class Trader:
                     if strategy.buy_constraints is not None
                     else True
                 ):
-                    self.execute_buy(tick=row, instrument=subject,margin=30000)
+                    self.execute_buy(tick=row, instrument=subject, margin=30000)
 
                 elif row.sell_signal and (
                     strategy.sell_constraints(instrument=subject, **kwargs)
@@ -350,7 +365,9 @@ class Trader:
                     else True
                 ):
                     self.execute_sell(
-                        tick=row, trade=subject.position.open_trade, instrument=subject
+                        price=row.close,
+                        trade=subject.position.open_trade,
+                        instrument=subject,
                     )
 
         strategy = strategy or self.strategy
@@ -363,7 +380,7 @@ class Trader:
         if not subjects:
             logger.warning("No strategy applied as target(s) were not provided.")
             return
-            
+
         logger.info("Starting simulations")
         if strategy.custom_test is not None:
             strategy.custom_test()
@@ -373,4 +390,3 @@ class Trader:
 
         # PRINTING FINAL TRADE REPORT FOR THE SIMULATION
         self.trade_report
-
