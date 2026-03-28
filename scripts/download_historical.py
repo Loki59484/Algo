@@ -2,11 +2,10 @@ from pathlib import Path
 from tqdm import tqdm
 import datetime as dt
 import pandas as pd
+import argparse
 import logging
-import json
 import sys
 import os
-import argparse
 
 # Adding root directory to sys.path for module imports
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -16,29 +15,32 @@ HIST_DATA_DIR = ROOT_DIR / "data" / "historical"
 
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
-    sys.path.insert(0, str(CORE_DIR))
+
 from core import upstox_func as ustox
+from core.anatomy import save_parquet
+from core.datatypes import to_ist
 
 # Intitiating logger
 logger = logging.getLogger(__name__)
+
 EXPIRED_KEYS_FILE = ustox.DATA_DIR / "expired_keys.parquet"
 
 
-def historical(key, simdate, isexpired=False, expiry=None):
+def historical(key, from_date, to_date, isexpired=False, expiry=None):
     if isexpired and expiry is None:
         raise ValueError("Must provide the expiry date for an expired instrument")
     if isexpired:
         history = ustox.get_historical(
             dtype="historical",
             expired_key=key,
-            to_date=simdate,
-            from_date=simdate,
+            to_date=to_date,
+            from_date=from_date,
             is_expired=True,
             expiry_date=expiry,
         )
     else:
         history = ustox.get_historical(
-            dtype="intraday", instrument_key=key, from_date=simdate, to_date=simdate
+            dtype="intraday", instrument_key=key, from_date=from_date, to_date=to_date
         )
         history = (
             history
@@ -46,87 +48,122 @@ def historical(key, simdate, isexpired=False, expiry=None):
             else ustox.get_historical(
                 dtype="historical",
                 instrument_key=key,
-                from_date=simdate,
-                to_date=(simdate),
+                from_date=from_date,
+                to_date=to_date,
             )
         )
     return history
 
 
+def download_cache(
+    option_key: str,
+    expiry: str,
+    is_expired: bool,
+    date: dt.datetime,
+    out_path: Path = None,
+):
+    history = historical(option_key, isexpired=is_expired, from_date=date,to_date=date, expiry=expiry)
+    if history is None or history.empty:
+        raise Exception("Failed to save cache!")
+    if out_path:
+        history.to_parquet(out_path, engine="pyarrow", compression="snappy")
+        logger.info(f"Cache create for {option_key}")
+    return history
+
+
+def save_datewise(
+    data: pd.DataFrame, target_dir: Path, makedirs: bool = True, **metadata
+):
+    data["date"] = to_ist(data["timestamp"]).dt.date
+    grouped = data.groupby("date")
+    for date, group in grouped:
+        file_path = (
+            target_dir
+            / date.strftime("%Y")
+            / date.strftime("%m")
+            / date.strftime("%d")
+            / f"{metadata.get('interval',"1")}_{metadata.get('unit',"minutes")}"
+            / f"{metadata.get('instrument_key', 'unknown')}.parquet"
+        )
+
+        clean_group = group.drop(columns=["date"])
+        save_parquet(clean_group, file_path, date=date, **metadata)
+
+
 def download_data(spot, is_expired=False, interval=1, unit="minutes"):
 
-    def save_datewise(data: pd.DataFrame, target_dir: Path, option_key: str):
-        data["date"] = pd.to_datetime(data["timestamp"]).dt.date
-        grouped = data.groupby("date")
-        for date, group in grouped:
-            date_str = date.strftime("%Y-%m-%d")
-            file_path = (
-                target_dir
-                / f"{date.year}/{date.month}/{date.day}/{interval}_{unit}/{option_key[:-11]}.parquet"
-            )
-            group.drop(columns=["date"], inplace=True)
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            group.to_parquet(file_path, index=False, engine="pyarrow")
-
     expiries = list(set(ustox.get_expiry(options=spot, is_expired=is_expired)))
-    keys = {}
     if (
         os.path.exists(EXPIRED_KEYS_FILE)
         and not os.path.getsize(EXPIRED_KEYS_FILE) == 0
     ):
-        keys = pd.read_parquet(EXPIRED_KEYS_FILE)
+        instruments = pd.read_parquet(EXPIRED_KEYS_FILE)
     else:
+        instruments = []
         for date in tqdm(expiries, "Getting expires"):
-            # Get all expired instruments for the given expiry date and filter for CE with minimum lot of 65 or 75
+            # Get all expired instruments for the given expiry date
             data = ustox.get_expired_instruments(expiry_date=date, underlying=spot)
             if data.empty:
                 continue
-            call_filter = data["trading_symbol"].str.contains("CE")
-            put_filter = data["trading_symbol"].str.contains("PE")
-            call_key = (data[call_filter])["instrument_key"]
-            put_key = (data[put_filter])["instrument_key"]
-            keys[date] = [call_key.values.tolist(), put_key.values.tolist()]
-
-        # SAVE EXPIRED KEYS TO A FILE
-        df = pd.DataFrame(keys)
-        df.to_parquet(EXPIRED_KEYS_FILE, index=False, engine="pyarrow")
+            instruments.append(data)
+        instruments = pd.concat(instruments, ignore_index=True)
+        instruments.to_parquet(EXPIRED_KEYS_FILE, index=False, engine="pyarrow")
 
     holidays = pd.read_json(ustox.CONFIG_DIR / "holidays.json")
-    for exp in tqdm(expiries, "Downloading Option data"):
+    for exp in tqdm(expiries, "Downloading Option data", position=0, leave=True):
         exp_dt = dt.datetime.strptime(exp, "%Y-%m-%d").date()
 
         if not (
             (holidays["date"] == exp)
             & (holidays["closed_exchanges"].str.contains("NSE", na=False))
         ).any():
-            try:
-                call_keys = keys[exp][0]
-                call_key = call_keys[len(call_keys) // 2]
-                put_keys = keys[exp][1]
-                put_key = put_keys[len(put_keys) // 2]
-                call_data = historical(
-                    key=call_key,
-                    expiry=exp,
-                    isexpired=is_expired,
-                    simdate=exp_dt,
-                )
-                put_data = historical(
-                    key=put_key,
-                    expiry=exp,
-                    isexpired=is_expired,
-                    simdate=exp_dt,
-                )
-                underlying = ustox.get_historical(
-                    from_date=exp_dt - dt.timedelta(days=7), to_date=exp_dt
-                )
-            except KeyError:
-                continue
+            call_keys = instruments[
+                (instruments["instrument_type"] == "CE")
+                & (instruments["expiry"] == exp)
+            ]
+            call = call_keys.iloc[len(call_keys) // 2]
+            put_keys = instruments[
+                (instruments["instrument_type"] == "PE")
+                & (instruments["expiry"] == exp)
+            ]
+            put = put_keys.iloc[len(put_keys) // 2]
+            call_data = historical(
+                key=call["instrument_key"],
+                expiry=exp,
+                isexpired=is_expired,
+                from_date=exp_dt - dt.timedelta(days=7),
+                to_date=exp_dt,
+            )
+            put_data = historical(
+                key=put["instrument_key"],
+                expiry=exp,
+                isexpired=is_expired,
+                from_date=exp_dt - dt.timedelta(days=7),
+                to_date=exp_dt,
+            )
+            underlying = ustox.get_historical(
+                from_date=exp_dt - dt.timedelta(days=7), to_date=exp_dt
+            )
             if call_data.empty or put_data.empty or underlying.empty:
                 continue
             HIST_DATA_DIR.mkdir(parents=True, exist_ok=True)
-            save_datewise(call_data, HIST_DATA_DIR, call_key)
-            save_datewise(put_data, HIST_DATA_DIR, put_key)
-            save_datewise(underlying, HIST_DATA_DIR, spot)
+            kwargs = {
+                "interval": interval,
+                "unit": unit,
+            }
+            save_datewise(
+                call_data,
+                HIST_DATA_DIR,
+                **call.to_dict(),
+                **kwargs,
+            )
+            save_datewise(
+                put_data,
+                HIST_DATA_DIR,
+                **put.to_dict(),
+                **kwargs,
+            )
+            save_datewise(underlying, HIST_DATA_DIR, instrument_key=spot, **kwargs)
 
 
 if __name__ == "__main__":
@@ -150,7 +187,7 @@ months  | 1           | Jan 2000       | No limit
         "-s",
         "--spot",
         default="NSE_INDEX|Nifty 50",
-        action="store_true",
+        type=str,
         help="Download underlying data | Requires the instrument key for the underlying instrument",
     )
     parser.add_argument(
@@ -164,7 +201,7 @@ months  | 1           | Jan 2000       | No limit
         "-u",
         "--unit",
         default="minutes",
-        action="store_true",
+        type=str,
         help="Specify the unit for the interval | Default is minutes |\n" + HELP_TABLE,
     )
     parser.add_argument(

@@ -88,12 +88,12 @@ class App_cli:
             config.looprun = asyncio.Event()
             config.tick_ready = asyncio.Event()
             ana.ticks_ready = asyncio.Event()
-            ana.Trader.lock = asyncio.Lock()
+            ana.Tester.lock = asyncio.Lock()
             
             if self.buffer is None:
                 self.buffer = asyncio.Queue(maxsize=15)
 
-            self.Trader_under = ana.Trader(
+            self.Trader_under = ana.Tester(
                 self.keys[2],
                 self.scrip_plotdata,
                 gui=self,
@@ -102,7 +102,7 @@ class App_cli:
             )
             self.logconsole.log_info(f"Index initialized")
 
-            self.Trader1 = ana.Trader(
+            self.Trader1 = ana.Tester(
                 self.keys[0],
                 self.call_plotdata,
                 gui=self,
@@ -111,7 +111,7 @@ class App_cli:
                 underlying=self.Trader_under,
             )
             self.logconsole.log_info(f"Trader1 initialized for {self.keys[0]}")
-            self.Trader2 = ana.Trader(
+            self.Trader2 = ana.Tester(
                 self.keys[1],
                 self.put_plotdata,
                 gui=self,

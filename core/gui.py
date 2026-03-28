@@ -590,8 +590,8 @@ class App:
                 self.tradethread.join()
             config.stopevent.clear()
             self.live_index = 0
-            self.call_plotdata = ana.Plotdata(self.keys[0])
-            self.put_plotdata = ana.Plotdata(self.keys[1])
+            self.call_plotdata = ana.History(self.keys[0])
+            self.put_plotdata = ana.History(self.keys[1])
             self.logconsole.log_info("Trade data has been reset.")
             self.updater()
             self.tradethread = threading.Thread(target=self.startasyncloop, daemon=True)
@@ -978,7 +978,7 @@ class App:
 
     async def async_main(self):
         try:
-            self.Trader_under = ana.Trader(
+            self.Trader_under = ana.Tester(
                 self.keys[2],
                 self.scrip_plotdata,
                 gui=self,
@@ -987,7 +987,7 @@ class App:
             )
             self.logconsole.log_info(f"Index initialized")
 
-            self.Trader1 = ana.Trader(
+            self.Trader1 = ana.Tester(
                 self.keys[0],
                 self.call_plotdata,
                 gui=self,
@@ -996,7 +996,7 @@ class App:
                 underlying=self.Trader_under,
             )
             self.logconsole.log_info(f"Trader1 initialized for {self.keys[0]}")
-            self.Trader2 = ana.Trader(
+            self.Trader2 = ana.Tester(
                 self.keys[1],
                 self.put_plotdata,
                 gui=self,

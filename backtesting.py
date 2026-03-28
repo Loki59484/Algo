@@ -1,128 +1,190 @@
-from functools import partial
-import multiprocessing as mp
-import asyncio
-import pandas as pd
-import tqdm
-import os
+from collections import defaultdict
+import shutil
+from pathlib import Path
+import pandas_ta as ta
+from tqdm import tqdm
 import sys
-import traceback
-import time
-import prodigy as ui
-from core import upstox_func as ustox
-import config
-import logging
 
-LOG_FILE_PATH = os.path.join(ustox.directory, "parallel_results.csv")
-original_stdout = sys.stdout
-sys.stdout = open(os.devnull, 'w')
-logger = logging.getLogger(__name__)
+ROOT_DIR = Path(__file__).resolve().parent
 
-def init_worker(shared_lock):
-    """Fires once per worker when the pool starts, securely setting the tqdm lock."""
-    tqdm.tqdm.set_lock(shared_lock)
-    
-def logger_process(log_queue, file_path):
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-    with open(file_path, "w") as f:
-        f.write(
-            "Index,Date,Type,Buy Price,Sell Price,Stoploss,Tick Close,Points,Units,P&L,Stoploss Hit,ADX,DI+,DI-\n"
+# IMPORTING CUSTOM MODULES
+from core import anatomy as ana
+from core.datatypes import *
+from core.upstox_func import DATA_DIR
+print("-------------TRADING SIMULATOR-------------".center(shutil.get_terminal_size().columns))
+
+# SETTING UP TRADER
+trader = ana.Trader()
+strat = ana.Strategy()
+strat.add_indicators(
+    [
+        {"kind": "supertrend", "length": 14, "multiplier": 2.0},
+        {"kind": "adx", "length": 14},
+        {"kind": "atr", "length": 14},
+    ]
+)
+trader.strategy = strat
+
+# LOADING INSTRUMENTS
+files = list((DATA_DIR / "historical").rglob("*.parquet"))
+files = [file for file in files if "INDEX" not in str(file)]
+insts = Instrument.load_multiple(source=files, lookback=1)
+insts_dict = {(item.key, item.date): item for item in insts}
+trader.add_instrument(insts_dict)
+# CREATE BUCKETS FOR EACH DAY
+daily_buckets = defaultdict(dict)
+for instrument in tqdm(
+    trader.instruments.values(), desc="Filtering instruments", leave=False
+):
+    leg_type = "CE" if "CE" in instrument.type else "PE"
+    daily_buckets[instrument.date][leg_type] = instrument
+for trade_date, legs in tqdm(
+    daily_buckets.items(), desc="Loading Buckets", leave=False
+):
+    bucket = ana.Bucket(trade_date, legs=legs, margin=300000)
+    trader.buckets.append(bucket)
+
+# DEFINING BUY-SELL PARAMETERS
+
+
+def buy_signal(df, **kwargs):
+    cond_1 = (df["close"] > df["SUPERT_14_2.0"]) & (
+        df["SUPERT_14_2.0"] > df["SUPERT_14_2.0"].shift(1)
+    )
+    cond_2 = (20 < (df["ADXR_14_2"])) & ((df["ADXR_14_2"]) < 35)
+    cond_3 = df["DMP_14"] > df["DMN_14"]
+    cond_4 = abs(df["DMP_14"] - df["DMN_14"]) > 1
+    return (cond_1) & (cond_2) & (cond_3) & (cond_4)
+
+
+def sell_signal(df, **kwargs):
+    cond_1 = (df["close"] > df["SUPERT_14_2.0"]) & (
+        df["SUPERT_14_2.0"] == df["SUPERT_14_2.0"].shift(1)
+    )
+    square_off = pd.Series(df.index == df.index[-1], index=df.index)
+    return cond_1 | square_off
+
+
+def buy_cons(**kwargs):
+    target = kwargs.get("instrument", None)
+    return not target.position.open
+
+
+def sell_cons(**kwargs):
+    target = kwargs.get("instrument", None)
+    return target.position.open
+
+
+def _worker(df: pd.DataFrame, study: ta.Study, kwargs):
+    return ana.Strategy.apply_study(df, study=study, **kwargs)
+
+
+def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
+
+    flat_subjects = [
+        subject for bucket in trader.buckets for subject in bucket.legs.values()
+    ]
+    raw_dfs = [subject.to_dataframe() for subject in flat_subjects]
+    worker_func = partial(_worker, study=strategy.indicators, kwargs=kwargs)
+    logger.info("Computing indicators")
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        finished_dfs = list(
+            tqdm(
+                executor.map(worker_func, raw_dfs), 
+                total=len(raw_dfs), 
+                desc="Calculating TA & Signals"
+            )
         )
-    with open(file_path, "a", buffering=1) as f:
-        while True:
-            try:
-                message = log_queue.get()
-                if message == "STOP":
-                    break
-                f.write(f"{message}\n")
-                f.flush()  
-            except Exception as e:
-                logger.exception(f"\nLogger Process Error: {e}")
-            except (EOFError, BrokenPipeError, FileNotFoundError):
-                break
+
+    for subject, enriched_df in zip(flat_subjects, finished_dfs):
+        subject.historical_df = enriched_df.loc[subject.date :].reset_index()
+    logger.info("Technical analysis completed")
+        
+    # EXTRACT TRADING DAY DATA, DROPPING WARM UP CANDLES
+    for bucket in tqdm(trader.buckets, desc="Testing buckets", position=0, leave=True):
+        call_option = bucket.legs.get("CE")
+        put_option = bucket.legs.get("PE")
+
+        if call_option is None or put_option is None:
+            continue
+
+        for row_ce, row_pe in zip(
+                call_option.historical_df.itertuples(),
+                put_option.historical_df.itertuples(),
+            ):
+            # BUY SELL CONSTRAINTS
+            if bucket.open_position is None:
+                if row_ce.buy_signal:
+                    call_buy_cons = (
+                        strategy.buy_constraints(instrument=call_option, **kwargs)
+                        if strategy.buy_constraints is not None
+                        else True
+                    )
+                    if call_buy_cons:
+                        trader.execute_buy(
+                            tick=row_ce, instrument=call_option, margin=bucket.margin
+                        )
+                        bucket.open_position = call_option.position
+                        continue
+
+                if row_pe.buy_signal:
+                    put_buy_cons = (
+                        strategy.buy_constraints(instrument=put_option, **kwargs)
+                        if strategy.buy_constraints is not None
+                        else True
+                    )
+                    if put_buy_cons:
+                        trader.execute_buy(
+                            tick=row_pe, instrument=put_option, margin=bucket.margin
+                        )
+                        bucket.open_position = put_option.position
+                        continue
+
+            else:
+                if bucket.open_position.key == call_option.key:
+                    if row_ce.sell_signal:
+                        call_sell_cons = (
+                            strategy.sell_constraints(instrument=call_option, **kwargs)
+                            if strategy.sell_constraints is not None
+                            else True
+                        )
+                        if call_sell_cons:
+                            trader.execute_sell(
+                                tick=row_ce,
+                                trade=bucket.open_position.open_trade,
+                                instrument=call_option,
+                            )
+                            bucket.open_position = None
+
+                elif bucket.open_position.key == put_option.key:
+                    if row_pe.sell_signal:
+                        put_sell_cons = (
+                            strategy.sell_constraints(instrument=put_option, **kwargs)
+                            if strategy.sell_constraints is not None
+                            else True
+                        )
+                        if put_sell_cons:
+                            trader.execute_sell(
+                                tick=row_pe,
+                                trade=bucket.open_position.open_trade,
+                                instrument=put_option,
+                            )
+                            bucket.open_position = None
 
 
-def run_worker(date_idx, log_queue, date = None):
-    from core import anatomy as ana
-    start_time = time.strftime("%H:%M:%S")
-    worker_id = mp.current_process()._identity[0]
-    config.pbar = worker_id
-    logger.debug(f"Process started for {date[date_idx]}")
+trader.strategy.buy_conditon = buy_signal
+trader.strategy.sell_condition = sell_signal
+trader.strategy.buy_constraints = buy_cons
+trader.strategy.sell_constraints = sell_cons
+trader.strategy.custom_test = partial(
+    procedure,
+    trader=trader,
+    strategy=trader.strategy,
+    buy_condition=buy_signal,
+    sell_condition=sell_signal,
+)
 
-    async def _run_sim():
-        ana.ticks_ready = asyncio.Event()
-        ana.Trader.lock = asyncio.Lock()
-        config.looprun = asyncio.Event()
-        config.tick_ready = asyncio.Event()
-        local_buffer = asyncio.Queue(maxsize=15)
-        await ui.main(
-            dateidx=date_idx, verbose=True, log_queue=log_queue, buffer=local_buffer
-        )
-        logger.debug(f"Process completed successfully for {date[date_idx]}")
-    try:
-        asyncio.run(_run_sim())
-        return date_idx, "Success"
-    except BaseException as e:
-        logger.error(f"Error while running simulation processes for {date[date_idx]} | \n{e}")
-        error_trace = traceback.format_exc()
-        return date_idx, f"Failed: {type(e).__name__} - {str(e)}\n{error_trace}"
-    finally:
-        ana.pool.shutdown(wait=False, cancel_futures=True)
-
-
-def run_simulations():
-    manager = mp.Manager()
-    log_queue = manager.Queue()
-
-    listener = mp.Process(target=logger_process, args=(log_queue, LOG_FILE_PATH))
-    listener.daemon = True
-    listener.start()
-
-    sim_dir = os.path.join(ustox.directory, "sim_database/")
-    testdata = os.listdir(sim_dir)
-    testdata_slice = testdata
-    dateidxs = [testdata.index(x) for x in testdata_slice]
-    lock = mp.RLock()
-    tqdm.tqdm.set_lock(lock)
-    print(f"Starting parallel simulation for {len(testdata)} dates...",file=sys.stderr)
-    worker_with_queue = partial(run_worker, log_queue=log_queue, date=testdata)
-    with mp.Pool(processes=os.cpu_count(), maxtasksperchild=1, initializer=init_worker, initargs=(lock,)) as pool:
-        with tqdm.tqdm(total=len(dateidxs) - 2, desc="Backtesting",position=0) as pbar:
-            for result in pool.imap_unordered(worker_with_queue, dateidxs):
-                completed_idx, status = result      
-                if status == "Success":
-                    tqdm.tqdm.write(f"✓ Index {completed_idx} completed.")
-                else:
-                    tqdm.tqdm.write(f"✗ Index {completed_idx} crashed: {status}")
-                pbar.update(1)
-    log_queue.put("STOP")
-    logger.info("Stopping")
-    listener.join()
-
-if __name__ == "__main__":
-    try:
-        run_simulations()
-        pass
-    except KeyboardInterrupt:
-        print("\nInterrupted by user.")
-    finally:
-        sys.stdout = original_stdout
-
-        pd.set_option('display.max_rows', None)
-        if os.path.exists(LOG_FILE_PATH):
-            df = pd.read_csv(LOG_FILE_PATH, on_bad_lines="skip")
-            print("\n--- Final Results ---")
-            print(df.sort_values(by=["Date", "Index"]))
-            print("#----Stoploss Trades----#")
-            print(df[df["Sell Price"] == df["Stoploss"]])
-            print("#----Winning Trades----#")
-            print(df[df["P&L"]>0])
-            print("Total: ",df[df["P&L"]>0]["P&L"].sum())
-            print("#----Losing Trades----#")
-            print(df[df["P&L"]<0])
-            print("Total: ",df[df["P&L"]<0]["P&L"].sum())
-            points = pd.to_numeric(df["Points"], errors="coerce").sum()
-            pnl = pd.to_numeric(df["P&L"], errors="coerce").sum()
-            print(f"\nTotal points captured: {points}")
-            print(f"Gross P&L: {pnl}")
-        else:
-            print(f"Log file not found at {LOG_FILE_PATH}")
+trader.test()
