@@ -53,6 +53,8 @@ from core.protobuffs import MarketDataFeedV3_pb2 as pb
 from core.datatypes import *
 
 # STATIC VARIABLES
+if not ENV_PATH.exists():
+    os.env
 load_dotenv(dotenv_path=ENV_PATH)
 API_KEY = os.getenv("UPSTOX_API_KEY")
 API_SECRET = os.getenv("UPSTOX_API_SECRET")
@@ -1125,3 +1127,4 @@ class UpstoxRateLimiter:
 
 # Instantiate a SINGLE global instance of this lock for the whole project
 GLOBAL_UPSTOX_LIMITER = UpstoxRateLimiter()
+get_access_token()

@@ -28,8 +28,6 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 # IMPORTING CUSTOM MODULES
-from core import upstox_func as ustox
-from config import config
 from core.datatypes import *
 
 
@@ -130,6 +128,7 @@ class Strategy:
             self.indicators = ta.Study(
                 name="Stategy_indicators",
                 ta=([indicators] if isinstance(indicators, dict) else indicators),
+                cores=0,
             )
             return
         if isinstance(indicators, dict):
@@ -207,7 +206,7 @@ class Strategy:
 
 @dataclass(slots=True)
 class Profile:
-    pass
+    user: str | None = None
 
 
 @dataclass
@@ -263,18 +262,19 @@ class Trader:
                 self._trade_report = df.sort_values(by="Timestamp").reset_index(
                     drop=True
                 )
+                display_df = self._trade_report.copy()
+
+                float_cols = display_df.select_dtypes(include=["float"]).columns
+                display_df[float_cols] = display_df[float_cols].round(2)
             if verbose:
-                # self._trade_report.drop(columns='ID').to_csv(ustox.LOG_DIR/str(os.getpid()))
-                print(self._trade_report.round(2).to_markdown(tablefmt="pretty"))
-                print(f"Total Movement: {self._trade_report['Movement'].sum():.2f}")
-                print(f"Final PnL: {self._trade_report['PnL'].sum():.2f}")
+                print(display_df.to_markdown(tablefmt="pretty"))
+                print(f"Total Movement: {display_df['Movement'].sum():.2f}")
+                print(f"Final PnL: {display_df['PnL'].sum():.2f}")
                 logger.info(
-                    f"Final Results:\n{self._trade_report.round(2).to_markdown(tablefmt="pretty")}"
+                    f"Final Results:\n{display_df.to_markdown(tablefmt="pretty",floatfmt=".2f")}"
                 )
-                logger.info(
-                    f"Total Movement: {self._trade_report['Movement'].sum():.2f}"
-                )
-                logger.info(f"Final PnL: {self._trade_report['PnL'].sum():.2f}")
+                logger.info(f"Total Movement: {display_df['Movement'].sum():.2f}")
+                logger.info(f"Final PnL: {display_df['PnL'].sum():.2f}")
         except Exception:
             logger.exception("Could not generate trade report")
 
@@ -298,7 +298,14 @@ class Trader:
         qty = self.calculate_units(
             balance=margin, close=tick.close, lot_size=instrument.lot_size
         )
-        trade = Trade.from_candle(qty=qty, id=order_id, candle=tick)
+        if qty == 0:
+            logger.warning(
+                f"Insufficient margin to place order at price {tick.close} | Option : {instrument.key}"
+            )
+            return
+        trade = Trade.from_candle(
+            qty=qty, id=order_id, candle=tick, side=instrument.type
+        )
         instrument.position.open_position(trade=trade)
         logger.info(f"Buy order placed for {qty} at {tick.close}")
 
@@ -357,7 +364,7 @@ class Trader:
                     if strategy.buy_constraints is not None
                     else True
                 ):
-                    self.execute_buy(tick=row, instrument=subject, margin=30000)
+                    self.execute_buy(tick=row, instrument=subject, margin=300000)
 
                 elif row.sell_signal and (
                     strategy.sell_constraints(instrument=subject, **kwargs)
@@ -389,4 +396,4 @@ class Trader:
                 test_instrument(subject, **kwargs)
 
         # PRINTING FINAL TRADE REPORT FOR THE SIMULATION
-        self.trade_report
+        return self.trade_report

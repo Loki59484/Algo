@@ -85,7 +85,8 @@ def save_datewise(
             / f"{metadata.get('interval',"1")}_{metadata.get('unit',"minutes")}"
             / f"{metadata.get('instrument_key', 'unknown')}.parquet"
         )
-
+        if file_path.exists():
+            continue
         clean_group = group.drop(columns=["date"])
         save_parquet(clean_group, file_path, date=date, **metadata)
 

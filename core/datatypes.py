@@ -157,6 +157,7 @@ class Tick:
 @dataclass
 class Trade:
     trade_id: str = 0
+    side : str | None = None
     timestamp: datetime = to_ist(0)
     buy_price: float = 0
     buy_qty: int = 0
@@ -165,9 +166,15 @@ class Trade:
     movement: float = 0
     PnL: float = 0
     remark: str = ""
-    stoploss : float | None = None
-    target : float | None = None
-    buy_adx : float | None = None
+    stoploss: float | None = None
+    target: float | None = None
+    buy_adx: float | None = None
+    buy_DMP: float | None = None
+    buy_DMN: float | None = None
+    buy_EMA: float | None = None
+    buy_RSI: float | None = None
+    buy_SUPT: float | None = None
+    buy_VWAP: float | None = None
 
     @classmethod
     def from_candle(
@@ -175,6 +182,7 @@ class Trade:
         candle,
         qty: int,
         id: str = "111",
+        side: str | None = None
     ):
         """
         Creates a trade object using the current tick for backtesting purposes.
@@ -193,12 +201,19 @@ class Trade:
         """
         return Trade(
             trade_id=id,
+            side=side,
             timestamp=candle.timestamp,
             buy_price=candle.close,
             buy_qty=qty,
-            buy_adx=candle.ADXR_14_2
+            buy_adx=candle.ADXR_14_2,
+            buy_DMP=candle.DMP_14,
+            buy_DMN=candle.DMN_14,
+            buy_EMA=candle.EMA_200,
+            buy_RSI=candle.RSI_14,
+            buy_SUPT=candle.SUPERT_14_2,
+            buy_VWAP=candle.VWAP_D,
         )
-            
+
     def close_trade(self, price: float, qty: int, remark: str = ""):
         """Closes an open trade using a sell order
 
@@ -239,8 +254,8 @@ class Position:
         if self.trades:
             self.report = pd.DataFrame(
                 {
-                    "ID": [trade.trade_id for trade in self.trades],
                     "Timestamp": [trade.timestamp for trade in self.trades],
+                    "Side": [trade.side for trade in self.trades],
                     "Buy_price": [trade.buy_price for trade in self.trades],
                     "Buy_qty": [trade.buy_qty for trade in self.trades],
                     "Sell_price": [trade.sell_price for trade in self.trades],
@@ -248,7 +263,13 @@ class Position:
                     "Movement": [trade.movement for trade in self.trades],
                     "PnL": [trade.PnL for trade in self.trades],
                     "Remark": [trade.remark for trade in self.trades],
-                    "ADX": [trade.buy_adx for trade in self.trades]
+                    "ADX": [trade.buy_adx for trade in self.trades],
+                    "DMP": [trade.buy_DMP for trade in self.trades],
+                    "DMN": [trade.buy_DMN for trade in self.trades],
+                    "EMA": [trade.buy_EMA for trade in self.trades],
+                    "RSI": [trade.buy_RSI for trade in self.trades],
+                    "Supertrend": [trade.buy_SUPT for trade in self.trades],
+                    "VWAP": [trade.buy_VWAP for trade in self.trades],
                 }
             )
         return self.report
@@ -338,7 +359,7 @@ class Instrument:
                 concurrent.futures.as_completed(futures),
                 total=len(futures),
                 desc="Loading Instruments",
-                leave=False
+                leave=False,
             ):
                 try:
                     inst = future.result()
