@@ -356,7 +356,7 @@ def get_historical(
             if is_expired:
                 if expiry_date is None:
                     expiry_date = set(
-                        get_expiry(options="NSE_INDEX|Nifty 50", is_expired=True)[::-1]
+                        get_expiry(options=["NSE_INDEX|Nifty 50"], is_expired=True)[::-1]
                     )
                     for date in expiry_date:
                         expired_key = get_expired_instruments(
@@ -444,15 +444,12 @@ def get_options(expiry="", dtype="contract", instrument_key="NSE_INDEX|Nifty 50"
         logger.error(v)
 
 
-def get_suitable(
+def get_options(
     expiry, funds=10000, instrument_key="NSE_INDEX|Nifty 50", ui=None
-):  # Getting suitable puts/calls
+):
     """
     Returns calls and puts suitable for trade based on defined conditions
     """
-    suitable_calls = []
-    suitable_puts = []
-    options = get_options(dtype="chain", instrument_key=instrument_key, expiry=expiry)
     """
     DELTA : Change in premium per change in spot price : PUT < -0.5   CALL > 0.5
     GAMMA : Change in Delta per change in spot price : 0.0003 < G < 0.0005
@@ -464,35 +461,7 @@ def get_suitable(
 
     Other factors like spread etc still need to be included
     """
-    spot = options[0]["underlying_spot_price"]
-
-    for item in options:
-        try:
-            ask = item["call_options"]["market_data"]["ask_price"]
-            bid = item["call_options"]["market_data"]["bid_price"]
-            spread = ask - bid
-            delta = item["call_options"]["option_greeks"]["delta"]
-            gamma = item["call_options"]["option_greeks"]["gamma"]
-            if all([spread < 2, abs(item["strike_price"] - spot) < 100]):
-                item["call_options"]["pcr"] = item["pcr"]
-                item["call_options"]["strike_price"] = item["strike_price"]
-                item["call_options"]["type"] = "Call"
-                suitable_calls.append(item["call_options"])
-
-            ask = item["put_options"]["market_data"]["ask_price"]
-            bid = item["put_options"]["market_data"]["bid_price"]
-            spread = ask - bid
-            delta = item["put_options"]["option_greeks"]["delta"]
-            gamma = item["put_options"]["option_greeks"]["gamma"]
-            if all([spread < 2, abs(item["strike_price"] - spot) < 100]):
-                item["put_options"]["pcr"] = item["pcr"]
-                item["put_options"]["strike_price"] = item["strike_price"]
-                item["put_options"]["type"] = "Put"
-                suitable_puts.append(item["put_options"])
-        except KeyError:
-            pass
-    return suitable_calls, suitable_puts
-
+    options = get_options(dtype="chain", instrument_key=instrument_key, expiry=expiry)
 
 # Getting market quote
 def get_marketquote(instrument_key="NSE_INDEX|Nifty 50"):
@@ -724,6 +693,7 @@ def get_expiry(options=None, is_expired=False):
     else:
         print("Expiries of unexpired instruments.")
         dump = []
+        breakpoint()
         for option in options:
             expiry = datetime.strptime(option["expiry"], "%Y-%m-%d")
             dump.append(expiry)

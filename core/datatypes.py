@@ -1,7 +1,9 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Callable
 from collections import deque
 from functools import partial
+from rich.table import Table
 import concurrent.futures
 from pathlib import Path
 from tqdm import tqdm
@@ -14,7 +16,6 @@ import os
 """
 This module contains custom dataclasses for smooth handling of trading data.
 """
-
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -35,6 +36,33 @@ def to_ist(target: pd.Series | list | int | float, unit="ms"):
 
     return parsed.tz_convert("Asia/Kolkata").tz_localize(None)
 
+
+def generate_dashboard(funds):
+    """Creates a clean, updating table for the terminal."""
+    table = Table(title="Live Trading Engine")
+    table.add_column("Starting Capital")
+    table.add_column("Available Margin")
+    table.add_column("Total Capital")
+    
+    # Format the numbers nicely
+    table.add_row(str(funds.starting_capital), f"₹{funds.available:,.2f}", f"₹{funds.total:,.2f}")
+    return table
+
+
+
+@dataclass(slots=True)
+class Profile:
+    user: str | None = None
+
+@dataclass(slots=True)
+class Funds:
+    starting_capital: float = 0
+    total : float = 0
+    used: float = 0
+    available: float = 0
+
+    def __post_init__(self):
+        self.available = self.total = self.starting_capital
 
 @dataclass(slots=True)
 class Greeks:
@@ -158,7 +186,8 @@ class Tick:
 class Trade:
     trade_id: str = 0
     side : str | None = None
-    timestamp: datetime = to_ist(0)
+    buy_timestamp: datetime = to_ist(0)
+    sell_timestamp: datetime = to_ist(0)
     buy_price: float = 0
     buy_qty: int = 0
     sell_price: float = 0
@@ -182,7 +211,8 @@ class Trade:
         candle,
         qty: int,
         id: str = "111",
-        side: str | None = None
+        side: str | None = None,
+        funds: Funds | None = None,
     ):
         """
         Creates a trade object using the current tick for backtesting purposes.
@@ -199,10 +229,12 @@ class Trade:
         --------
         Trade
         """
+        funds.available-= candle.close * qty
+        funds.used += candle.close * qty
         return Trade(
             trade_id=id,
             side=side,
-            timestamp=candle.timestamp,
+            buy_timestamp=candle.timestamp,
             buy_price=candle.close,
             buy_qty=qty,
             buy_adx=candle.ADXR_14_2,
@@ -214,18 +246,24 @@ class Trade:
             buy_VWAP=candle.VWAP_D,
         )
 
-    def close_trade(self, price: float, qty: int, remark: str = ""):
+    def close_trade(self, price: float, qty: int, timestamp: datetime, funds:Funds, remark: str = ""):
         """Closes an open trade using a sell order
 
         Args:
             price (float): Selling price
             qty (int): Sold quantity
+            timestamp (datetime): Timestamp of the sell order
+            remark (str): Remark for the trade
         """
         self.sell_price = price
         self.sell_qty = qty
         self.movement = self.sell_price - self.buy_price
         self.PnL = self.sell_qty * self.movement
+        self.sell_timestamp = timestamp
         self.remark = remark
+        funds.total += self.PnL
+        funds.available = min(funds.available + (self.sell_price * self.sell_qty), funds.starting_capital)
+        funds.used -= self.buy_price * self.buy_qty
 
 
 @dataclass(slots=True)
@@ -254,10 +292,11 @@ class Position:
         if self.trades:
             self.report = pd.DataFrame(
                 {
-                    "Timestamp": [trade.timestamp for trade in self.trades],
                     "Side": [trade.side for trade in self.trades],
+                    "Buy_timestamp": [trade.buy_timestamp for trade in self.trades],
                     "Buy_price": [trade.buy_price for trade in self.trades],
                     "Buy_qty": [trade.buy_qty for trade in self.trades],
+                    "Sell_timestamp": [trade.sell_timestamp for trade in self.trades],
                     "Sell_price": [trade.sell_price for trade in self.trades],
                     "Sell_qty": [trade.sell_qty for trade in self.trades],
                     "Movement": [trade.movement for trade in self.trades],
@@ -522,3 +561,52 @@ class Instrument:
         self.historical_df.set_index("timestamp", inplace=True)
         self.historical_df.sort_index()
         return self.historical_df
+
+
+@dataclass(slots=True)
+class Portfolio:
+    user : Profile 
+    funds: Funds = field(default_factory=Funds)
+    scheme: Callable | None = None
+
+    def update_funds(self, amount: float, used: bool = True):
+        if used:
+            self.funds.used += amount
+            self.funds.available -= amount
+        else:
+            self.funds.total += amount
+            self.funds.available += amount
+
+    def test_portfolio(self, target: pd.DataFrame, **kwargs):
+        """Tests the portfolio by applying the scheme to calculate the returns."""  
+        if self.scheme is not None:
+            return self.scheme(target, **kwargs)
+        else:
+            logger.warning("No scheme defined for portfolio.")
+            return target
+
+
+@dataclass
+class Bucket:
+    """A Bucket to collect instruments for being traded together."""
+
+    date: datetime
+    spot: Instrument | None = None
+    legs: dict[str, Instrument] = field(default_factory=dict)
+    open_position: Position | None = None
+
+    def add_leg(self, item: Instrument | dict[str, Instrument], leg_type):
+        """Adds Instrument instances as legs to a bucket object.
+
+        Args:
+            item (Instrument | dict[str, Instrument]): A single Instrument instance or a dict of Instrument instances.
+            If passing an Instrument instance, an option of `leg_type` can also be passed. `leg_type` defaults to `Instrument.type`.
+            If passing as a dict, ensure key:value pair is of `{"leg_type":Instrument}` form.
+
+        """
+        if isinstance(item, dict):
+            self.legs = {**self.legs, **item}
+        elif isinstance(item, Instrument):
+            key = leg_type if leg_type is not None else item.type
+            self.legs[key] = item
+

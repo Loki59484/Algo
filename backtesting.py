@@ -1,13 +1,15 @@
 from collections import defaultdict
+from datetime import datetime
+import joblib
+from rich.live import Live
 from pathlib import Path
 import pandas_ta as ta
-from datetime import datetime,time
 from tqdm import tqdm
 import shutil
+from datetime import time
 import sys
 
 ROOT_DIR = Path(__file__).resolve().parent
-
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
@@ -15,6 +17,8 @@ if str(ROOT_DIR) not in sys.path:
 from core import anatomy as ana
 from core.datatypes import *
 from core import upstox_func as ustox
+
+INSTRUMENT_CACHE = ustox.DATA_DIR / "cache" / "instruments_cache.joblib"
 
 print(
     "-------------TRADING SIMULATOR-------------".center(
@@ -38,10 +42,18 @@ strat.add_indicators(
 trader.strategy = strat
 
 # LOADING INSTRUMENTS
+
 files = list((ustox.DATA_DIR / "historical").rglob("*.parquet"))
 files = [file for file in files if "INDEX" not in str(file)]
 files.sort()
-insts = Instrument.load_multiple(source=files, lookback=2)
+
+if INSTRUMENT_CACHE.exists():
+    print("Loading instruments from cache...", end="\r")
+    insts = joblib.load(INSTRUMENT_CACHE)
+    print(f"Loaded {len(insts)} instruments from cache.", end="\r")
+else:
+    insts = Instrument.load_multiple(source=files, lookback=2)
+    joblib.dump(insts, INSTRUMENT_CACHE)
 insts_dict = {(item.key, item.date): item for item in insts}
 
 trader.add_instrument(insts_dict)
@@ -55,7 +67,7 @@ for instrument in tqdm(
 for trade_date, legs in tqdm(
     daily_buckets.items(), desc="Loading Buckets", leave=False
 ):
-    bucket = ana.Bucket(trade_date, legs=legs, margin=300000)
+    bucket = Bucket(trade_date, legs=legs)
     trader.buckets.append(bucket)
 
 # DEFINING BUY-SELL PARAMETERS
@@ -68,8 +80,8 @@ def buy_signal(df, **kwargs):
     cond_2 = (25 < (df["ADXR_14_2"])) & ((df["ADXR_14_2"]) < 30)
     cond_3 = df["DMP_14"] > df["DMN_14"]
     cond_4 = abs(df["DMP_14"] - df["DMN_14"]) > 1
-    cond_6 = (df['SUPERT_14_2.0']<df['VWAP_D'])
-    return (cond_1) & (cond_2) & (cond_3) & (cond_4) #& (cond_6)
+    cond_6 = df["SUPERT_14_2.0"] < df["VWAP_D"]
+    return (cond_1) & (cond_2) & (cond_3) & (cond_4)  # & (cond_6)
 
 
 def sell_signal(df, **kwargs):
@@ -114,27 +126,31 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
     # EXTRACT TRADING DAY DATA, DROPPING WARM UP CANDLES
     for subject, enriched_df in zip(flat_subjects, finished_dfs):
         truncated_df = enriched_df[enriched_df.index.date >= subject.date]
-        truncated_df=truncated_df.rename(columns = {'SUPERT_14_2.0' : "SUPERT_14_2",
-                                       'SUPERTl_14_2.0' : 'SUPERTs_14_2',
-                                       'SUPERTs_14_2.0' : 'SUPERTs_14_2',
-                                          })
+        truncated_df = truncated_df.rename(
+            columns={
+                "SUPERT_14_2.0": "SUPERT_14_2",
+                "SUPERTl_14_2.0": "SUPERTs_14_2",
+                "SUPERTs_14_2.0": "SUPERTs_14_2",
+            }
+        )
         subject.historical_df = truncated_df.reset_index()
     logger.info("Technical analysis completed")
     trader.buckets.sort(key=lambda b: b.date)
-    for bucket in tqdm(trader.buckets, desc="Testing buckets", position=0, leave=True):
+    for bucket in trader.buckets:
         call_option = bucket.legs.get("CE")
         put_option = bucket.legs.get("PE")
-
         if call_option is None or put_option is None:
             logger.warning(f"NoneType option found for bucket {bucket.date}")
             continue
-
         for row_ce, row_pe in zip(
             call_option.historical_df.itertuples(),
             put_option.historical_df.itertuples(),
         ):
-            if time(11,00) > row_ce.timestamp.time() > time(10,00) or time(14,00) > row_ce.timestamp.time() > time(13,00):
+            if time(11, 00) > row_ce.timestamp.time() > time(10, 00) or time(
+                14, 00
+            ) > row_ce.timestamp.time() > time(13, 00):
                 continue
+
             # BUY SELL CONSTRAINTS
             if bucket.open_position is None:
                 if row_ce.buy_signal:
@@ -145,7 +161,9 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
                     )
                     if call_buy_cons:
                         trader.execute_buy(
-                            tick=row_ce, instrument=call_option, margin=bucket.margin
+                            tick=row_ce,
+                            instrument=call_option,
+                            funds=trader.portfolio.funds,
                         )
                         bucket.open_position = call_option.position
                         bucket.open_position.open_trade.stoploss = row_ce.close - (
@@ -161,7 +179,9 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
                     )
                     if put_buy_cons:
                         trader.execute_buy(
-                            tick=row_pe, instrument=put_option, margin=bucket.margin
+                            tick=row_pe,
+                            instrument=put_option,
+                            funds=trader.portfolio.funds,
                         )
                         bucket.open_position = put_option.position
                         bucket.open_position.open_trade.stoploss = row_pe.close - (
@@ -177,7 +197,9 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
                     )
                     if row_ce.sell_signal or call_stoploss_hit:
                         call_sell_cons = (
-                            strategy.sell_constraints(instrument=call_option, **kwargs)
+                            strategy.sell_constraints(
+                                instrument=call_option, **kwargs
+                            )
                             if strategy.sell_constraints is not None
                             else True
                         )
@@ -187,7 +209,8 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
                                 trade=bucket.open_position.open_trade,
                                 instrument=call_option,
                                 exit_price=stoploss if call_stoploss_hit else None,
-                                remark="Stoploss hit" if call_stoploss_hit else "-",
+                                funds=trader.portfolio.funds,
+                                remark="SL" if call_stoploss_hit else "-",
                             )
                             bucket.open_position = None
 
@@ -197,7 +220,9 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
                     )
                     if row_pe.sell_signal or put_stoploss_hit:
                         put_sell_cons = (
-                            strategy.sell_constraints(instrument=put_option, **kwargs)
+                            strategy.sell_constraints(
+                                instrument=put_option, **kwargs
+                            )
                             if strategy.sell_constraints is not None
                             else True
                         )
@@ -207,10 +232,13 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
                                 trade=bucket.open_position.open_trade,
                                 instrument=put_option,
                                 exit_price=stoploss if put_stoploss_hit else None,
-                                remark="Stoploss hit" if put_stoploss_hit else "-",
+                                funds=trader.portfolio.funds,
+                                remark="SL" if put_stoploss_hit else "-",
                             )
                             bucket.open_position = None
-
+        trader.portfolio.funds.starting_capital = (
+            trader.portfolio.funds.available
+        ) = trader.portfolio.funds.total
 
 trader.strategy.buy_conditon = buy_signal
 trader.strategy.sell_condition = sell_signal
@@ -223,6 +251,19 @@ trader.strategy.custom_test = partial(
     buy_condition=buy_signal,
     sell_condition=sell_signal,
 )
+
+portf = Portfolio(Profile("Loki"), funds=Funds(starting_capital=30000))
+trader.portfolio = portf
+
+
+def portfolio_scheme(target: pd.DataFrame, **kwargs):
+    for rows in target.itertuples():
+        if rows.buy_signal:
+            return "buy"
+        elif rows.sell_signal:
+            return "sell"
+        else:
+            return "hold"
 
 
 def generate_tear_sheet(report_df: pd.DataFrame, starting_capital: float = 300000.0):
@@ -292,7 +333,9 @@ report = trader.test()
 logger.info("\n-------------BACKTESTING COMPLETE-------------")
 
 report_file = (
-    ustox.LOG_DIR / "reports" / f"trade_report_{datetime.now().strftime("%d%m%Y_%H%M%S")}.csv"
+    ustox.LOG_DIR
+    / "reports"
+    / f"trade_report_{datetime.now().strftime("%d%m%Y_%H%M%S")}.csv"
 )
 report_file.parent.mkdir(parents=True, exist_ok=True)
 report.to_csv(report_file)

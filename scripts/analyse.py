@@ -16,7 +16,7 @@ if __name__ == "__main__":
         df = pd.read_csv(file)
         df['DM_diff'] = df['DMP']-df['DMN']
         
-        df['Month'] = to_ist(df['Timestamp']).dt.strftime('%Y-%m')
+        df['Month'] = to_ist(df['Buy_timestamp']).dt.strftime('%Y-%m')
 
         # Build a comprehensive daily tear sheet
         monthly_analysis_df = df.groupby('Month').agg(

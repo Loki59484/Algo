@@ -1,7 +1,7 @@
 # ------Import Libraries------
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, Any, Literal
-from datetime import datetime
+from typing import Any, Callable
+from num2words import num2words
 import pyarrow.parquet as pq
 from pathlib import Path
 import pandas_ta as ta
@@ -204,37 +204,6 @@ class Strategy:
         return target
 
 
-@dataclass(slots=True)
-class Profile:
-    user: str | None = None
-
-
-@dataclass
-class Bucket:
-    """A Bucket to collect instruments for being traded together."""
-
-    date: datetime
-    spot: Instrument | None = None
-    legs: dict[str, Instrument] = field(default_factory=dict)
-    margin: float = 0
-    open_position: Position | None = None
-
-    def add_leg(self, item: Instrument | dict[str, Instrument], leg_type):
-        """Adds Instrument instances as legs to a bucket object.
-
-        Args:
-            item (Instrument | dict[str, Instrument]): A single Instrument instance or a dict of Instrument instances.
-            If passing an Instrument instance, an option of `leg_type` can also be passed. `leg_type` defaults to `Instrument.type`.
-            If passing as a dict, ensure key:value pair is of `{"leg_type":Instrument}` form.
-
-        """
-        if isinstance(item, dict):
-            self.legs = {**self.legs, **item}
-        elif isinstance(item, Instrument):
-            key = leg_type if leg_type is not None else item.type
-            self.legs[key] = item
-
-
 class Trader:
     """
     The trading engine built for backtesting multiple instruments all at once
@@ -247,6 +216,7 @@ class Trader:
         self.instruments: dict[str, Instrument] = {}
         self.buckets: list[Bucket] = []
         self._trade_report: pd.DataFrame | None = None
+        self.portfolio: Portfolio | None = None
 
     @property
     def trade_report(self, verbose: bool = True):
@@ -259,7 +229,7 @@ class Trader:
                     ],
                     ignore_index=True,
                 )
-                self._trade_report = df.sort_values(by="Timestamp").reset_index(
+                self._trade_report = df.sort_values(by="Buy_timestamp").reset_index(
                     drop=True
                 )
                 display_df = self._trade_report.copy()
@@ -270,6 +240,9 @@ class Trader:
                 print(display_df.to_markdown(tablefmt="pretty"))
                 print(f"Total Movement: {display_df['Movement'].sum():.2f}")
                 print(f"Final PnL: {display_df['PnL'].sum():.2f}")
+                print(
+                    f"Final PnL: {num2words(display_df['PnL'].sum().round(2), lang='en_IN')}"
+                )
                 logger.info(
                     f"Final Results:\n{display_df.to_markdown(tablefmt="pretty",floatfmt=".2f")}"
                 )
@@ -281,7 +254,10 @@ class Trader:
         return self._trade_report
 
     def calculate_units(self, balance, close, lot_size):
-        return max(0, int((balance / close) - ((balance / close) % lot_size)))
+        return min(
+            max(0, int((balance / close) - ((balance / close) % lot_size))),
+            (32000 - (32000 % lot_size)),
+        )
 
     def add_instrument(self, item: Instrument | dict[str, Instrument]):
         if isinstance(item, dict):
@@ -293,10 +269,10 @@ class Trader:
             logger.debug(f"Instrument {item.key} added to Trader instance.")
             return
 
-    def execute_buy(self, tick: Candle, instrument: Instrument, margin: float):
+    def execute_buy(self, tick: Candle, instrument: Instrument, funds: Funds, **kwargs):
         order_id = str(random.randint(10**11, 10**12 - 1))
         qty = self.calculate_units(
-            balance=margin, close=tick.close, lot_size=instrument.lot_size
+            balance=funds.available, close=tick.close, lot_size=instrument.lot_size
         )
         if qty == 0:
             logger.warning(
@@ -304,7 +280,7 @@ class Trader:
             )
             return
         trade = Trade.from_candle(
-            qty=qty, id=order_id, candle=tick, side=instrument.type
+            qty=qty, id=order_id, candle=tick, side=instrument.type, funds=funds
         )
         instrument.position.open_position(trade=trade)
         logger.info(f"Buy order placed for {qty} at {tick.close}")
@@ -316,12 +292,17 @@ class Trader:
         instrument: Instrument,
         qty=None,
         exit_price: float | None = None,
+        funds: Funds | None = None,
         **kwargs,
     ):
         qty = trade.buy_qty if qty is None else qty
         price = exit_price if not exit_price is None else tick.close
         trade.close_trade(
-            price=price, qty=trade.buy_qty, remark=kwargs.get("remark", "")
+            price=price,
+            qty=trade.buy_qty,
+            timestamp=tick.timestamp,
+            funds=funds,
+            remark=kwargs.get("remark", ""),
         )
         instrument.position.close_position()
         logger.info(f"Sell order placed for {trade.buy_price} at {price}")
@@ -364,7 +345,9 @@ class Trader:
                     if strategy.buy_constraints is not None
                     else True
                 ):
-                    self.execute_buy(tick=row, instrument=subject, margin=300000)
+                    self.execute_buy(
+                        tick=row, instrument=subject, funds=self.portfolio.funds
+                    )
 
                 elif row.sell_signal and (
                     strategy.sell_constraints(instrument=subject, **kwargs)
@@ -375,6 +358,7 @@ class Trader:
                         price=row.close,
                         trade=subject.position.open_trade,
                         instrument=subject,
+                        funds=self.portfolio.funds,
                     )
 
         strategy = strategy or self.strategy
