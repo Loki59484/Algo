@@ -1,0 +1,73 @@
+Screen {
+    layout: grid;
+    grid-size: 2 3;
+    grid-rows: 1fr 1fr 1fr;
+    grid-columns: 2fr 1fr;
+}
+
+#funds_pane {
+    background: $panel;
+    border: round white;
+    height: 100%;
+    border-title-align: right;
+    padding: 1;
+}
+
+#market_data_container {
+    row-span: 2;
+    background: $panel; 
+    border: round cyan;
+    height: 100%;
+}
+
+#call_ticks, #put_ticks {
+    height: 1fr;
+    border-top: panel cyan;    
+    border-title-style: bold;
+    border-title-align: center;
+    background: $panel; 
+    padding: 1;
+    scrollbar-visibility: hidden;
+    text-align: center;
+    width: 1fr;
+}
+
+#position_pane {
+    background: $panel; 
+    border: round cyan;
+    height: 100%;
+    padding: 1;
+    border-title-align: right;
+}
+
+#console_container {
+    border: panel pink;
+    height: 100%;
+    padding: 1;
+    background: black;
+}
+
+#bash_input {
+    background: white 20%;
+    height: 20%;
+    overflow-y:hidden;
+}
+
+
+#bash_log {
+    background: black;
+    height: 1fr;
+    padding: 1;
+    scrollbar-visibility: hidden;
+
+}
+
+#order_pane {
+    background: $panel; 
+    border: round cyan;
+    height: 100%;
+    border-title-align: right;
+    padding: 1;
+}
+
+

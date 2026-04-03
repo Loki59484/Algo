@@ -1,9 +1,8 @@
-from dataclasses import dataclass, field
+from dataclasses import field, fields
+from pydantic.dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Callable
 from collections import deque
-from functools import partial
-from rich.table import Table
+from typing import Callable
 import concurrent.futures
 from pathlib import Path
 from tqdm import tqdm
@@ -11,6 +10,7 @@ import pyarrow as pa
 import pandas as pd
 import numpy as np
 import logging
+import sys
 import os
 
 """
@@ -20,49 +20,40 @@ This module contains custom dataclasses for smooth handling of trading data.
 # Set up logging
 logger = logging.getLogger(__name__)
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
 
-def to_ist(target: pd.Series | list | int | float, unit="ms"):
-    """
-    Converts UNIX timestamps (ms) to strict naive IST objects.
-    Safely handles scalars, lists, and Pandas Series.
-    """
-    try:
-        parsed = pd.to_datetime(target, unit="ms", utc=True)
-    except ValueError:
-        parsed = pd.to_datetime(target, utc=True)
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-    if isinstance(parsed, pd.Series):
-        return parsed.dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
-
-    return parsed.tz_convert("Asia/Kolkata").tz_localize(None)
+# IMPORTING CUSTOM MODULES
+from core.methods import to_ist, parse_object
 
 
-def generate_dashboard(funds):
-    """Creates a clean, updating table for the terminal."""
-    table = Table(title="Live Trading Engine")
-    table.add_column("Starting Capital")
-    table.add_column("Available Margin")
-    table.add_column("Total Capital")
-    
-    # Format the numbers nicely
-    table.add_row(str(funds.starting_capital), f"₹{funds.available:,.2f}", f"₹{funds.total:,.2f}")
-    return table
+class Parsable:
+    """ Base class for inheriting object parsing ability"""    
+
+    def parse(cls,obj:dict):
+        """
+        Base method used to parse dicts recieved from Upstox into relevent dataclass
+        """
+        from dataclasses import fields
+        
+        required_fields = {f.name for f in fields(cls)}
+        filtered_dict = {k: v for k, v in obj.items() if k in required_fields}
+        return cls(**filtered_dict)
 
 
-
-@dataclass(slots=True)
-class Profile:
-    user: str | None = None
 
 @dataclass(slots=True)
 class Funds:
     starting_capital: float = 0
-    total : float = 0
+    total: float = 0
     used: float = 0
     available: float = 0
 
     def __post_init__(self):
         self.available = self.total = self.starting_capital
+
 
 @dataclass(slots=True)
 class Greeks:
@@ -101,6 +92,7 @@ class Candle:
     low: float = np.nan
     close: float = np.nan
     volume: int = 0
+    # CUSTOM FIELDS
     buy_signal: bool = 0
     sell_signal: bool = 0
 
@@ -129,7 +121,7 @@ class Tick:
         def load_ohlc(ohlc: dict):
 
             candle = Candle(
-                ts=ohlc.get("ts", "0"),
+                timestamp=to_ist(ohlc.get("ts", "0")),
                 open=ohlc.get("open", np.nan),
                 high=ohlc.get("high", np.nan),
                 low=ohlc.get("low", np.nan),
@@ -177,142 +169,105 @@ class Tick:
             ltpc=ltpc,
             depth=market_levels,
             oi=oi,
-            ohlc_1d_obj=ohlc_1d_obj,
-            ohlc_1m_obj=ohlc_1m_obj,
+            ohlc_1d=ohlc_1d_obj,
+            ohlc_1m=ohlc_1m_obj,
         )
 
 
-@dataclass
-class Trade:
-    trade_id: str = 0
-    side : str | None = None
-    buy_timestamp: datetime = to_ist(0)
-    sell_timestamp: datetime = to_ist(0)
-    buy_price: float = 0
-    buy_qty: int = 0
-    sell_price: float = 0
-    sell_qty: int = 0
-    movement: float = 0
-    PnL: float = 0
+@dataclass(slots=True)
+class Order:
+    """Class to hold order details recieved from upstox.
+
+    Returns:
+        Order
+    """
+
+    order_id: str = 0
+    transaction_type: str | None = None
+    order_timestamp: datetime = to_ist(0)
+    exchange: str | None = None
+    product: str | None = None
+    price: float | None = None
+    quantity: int | None = None
+    status: str | None = None
+    tag: str | None = None
+    instrument_token: str | None = None
+    placed_by: str | None = None
+    trading_symbol: str | None = None
+    tradingsymbol: str | None = None
+    order_type: str | None = None
+    validity: str | None = None
+    trigger_price: float | None = None
+    disclosed_quantity: int | None = None
+    average_price: float | None = None
+    filled_quantity: int | None = None
+    pending_quantity: int | None = None
+    status_message: str | None = None
+    status_message_raw: str | None = None
+    exchange_order_id: str | None = None
+    parent_order_id: str | None = None
+    variety: str | None = None
+    order_timestamp: str | None = None
+    exchange_timestamp: str | None = None
+    is_amo: bool | None = None
+    order_request_id: str | None = None
+    order_ref_id: str | None = None
     remark: str = ""
-    stoploss: float | None = None
-    target: float | None = None
-    buy_adx: float | None = None
-    buy_DMP: float | None = None
-    buy_DMN: float | None = None
-    buy_EMA: float | None = None
-    buy_RSI: float | None = None
-    buy_SUPT: float | None = None
-    buy_VWAP: float | None = None
 
     @classmethod
-    def from_candle(
-        cls,
-        candle,
-        qty: int,
-        id: str = "111",
-        side: str | None = None,
-        funds: Funds | None = None,
-    ):
+    def parse_order(cls, order: dict):
         """
-        Creates a trade object using the current tick for backtesting purposes.
-        Please use `Trade.from_order()` for live trading purposes.
-
-        Args
-        -------
-        tick: Tick,
-            Tick object for reading market state when the order was placed.
-        id: str, optional
-            Identifier for the trade. Defaults to 111 or order id of buy order, whichever is provided.
-
-        Returns:
-        --------
-        Trade
+        Parses upstox order into Order class object.
         """
-        funds.available-= candle.close * qty
-        funds.used += candle.close * qty
-        return Trade(
-            trade_id=id,
-            side=side,
-            buy_timestamp=candle.timestamp,
-            buy_price=candle.close,
-            buy_qty=qty,
-            buy_adx=candle.ADXR_14_2,
-            buy_DMP=candle.DMP_14,
-            buy_DMN=candle.DMN_14,
-            buy_EMA=candle.EMA_200,
-            buy_RSI=candle.RSI_14,
-            buy_SUPT=candle.SUPERT_14_2,
-            buy_VWAP=candle.VWAP_D,
-        )
-
-    def close_trade(self, price: float, qty: int, timestamp: datetime, funds:Funds, remark: str = ""):
-        """Closes an open trade using a sell order
-
-        Args:
-            price (float): Selling price
-            qty (int): Sold quantity
-            timestamp (datetime): Timestamp of the sell order
-            remark (str): Remark for the trade
-        """
-        self.sell_price = price
-        self.sell_qty = qty
-        self.movement = self.sell_price - self.buy_price
-        self.PnL = self.sell_qty * self.movement
-        self.sell_timestamp = timestamp
-        self.remark = remark
-        funds.total += self.PnL
-        funds.available = min(funds.available + (self.sell_price * self.sell_qty), funds.starting_capital)
-        funds.used -= self.buy_price * self.buy_qty
+        return parse_object(cls,order)
 
 
 @dataclass(slots=True)
 class Position:
-    key: str | None = None
-    open: bool = False
-    trades: list[Trade] = field(default_factory=list)
-    open_trade: Trade | None = None
-    PnL: float = 0
-    report: pd.DataFrame | None = None
+    """
+    Dataclass to hold positions retrieved from upstox
+    """
 
-    def open_position(self, trade: Trade):
-        try:
-            self.open = True
-            self.trades.append(trade)
-            self.open_trade = trade
-            logger.info(f"Position opened for {self.key}")
-        except Exception:
-            logger.exception("Error while opening position")
+    exchange: str | None = None
+    multiplier: float | None = None
+    value: float | None = None
+    pnl: float | None = None
+    product: str | None = None
+    instrument_token: str | None = None
+    average_price: float | None = None
+    buy_value: float | None = None
+    overnight_quantity: int | None = None
+    day_buy_value: float | None = None
+    day_buy_price: float | None = None
+    overnight_buy_amount: float | None = None
+    overnight_buy_quantity: int | None = None
+    day_buy_quantity: int | None = None
+    day_sell_value: float | None = None
+    day_sell_price: float | None = None
+    overnight_sell_amount: float | None = None
+    overnight_sell_quantity: int | None = None
+    day_sell_quantity: int | None = None
+    quantity: int | None = None
+    last_price: float | None = None
+    unrealised: float | None = None
+    realised: float | None = None
+    sell_value: float | None = None
+    trading_symbol: str | None = None
+    close_price: float | None = None
+    buy_price: float | None = None
+    sell_price: float | None = None
 
-    def close_position(self):
-        self.open = False
-        self.PnL = sum([trade.PnL for trade in self.trades])
+    @classmethod
+    def parse_position(cls, position: dict):
+        """Parses position update recieved from upstox.
 
-    def trade_report(self):
-        if self.trades:
-            self.report = pd.DataFrame(
-                {
-                    "Side": [trade.side for trade in self.trades],
-                    "Buy_timestamp": [trade.buy_timestamp for trade in self.trades],
-                    "Buy_price": [trade.buy_price for trade in self.trades],
-                    "Buy_qty": [trade.buy_qty for trade in self.trades],
-                    "Sell_timestamp": [trade.sell_timestamp for trade in self.trades],
-                    "Sell_price": [trade.sell_price for trade in self.trades],
-                    "Sell_qty": [trade.sell_qty for trade in self.trades],
-                    "Movement": [trade.movement for trade in self.trades],
-                    "PnL": [trade.PnL for trade in self.trades],
-                    "Remark": [trade.remark for trade in self.trades],
-                    "ADX": [trade.buy_adx for trade in self.trades],
-                    "DMP": [trade.buy_DMP for trade in self.trades],
-                    "DMN": [trade.buy_DMN for trade in self.trades],
-                    "EMA": [trade.buy_EMA for trade in self.trades],
-                    "RSI": [trade.buy_RSI for trade in self.trades],
-                    "Supertrend": [trade.buy_SUPT for trade in self.trades],
-                    "VWAP": [trade.buy_VWAP for trade in self.trades],
-                }
-            )
-        return self.report
+        Args:
+            position (dict): dict of position data.
 
+        Returns:
+            Position
+        """
+        return parse_object(cls,position)
 
 class Instrument:
     """
@@ -422,7 +377,7 @@ class Instrument:
         Loads instrument data and metadata into the instance. The data is expected to be a DataFrame containing the candles, and
         the metadata is expected to contain keys like 'instrument_key', 'date', 'expiry', 'lot_size', 'strike_price', and 'freeze_quantity'.
         """
-        from core.upstox_func import is_nse_holiday, DATA_DIR, get_historical
+        from core.upstox_methods import is_nse_holiday, DATA_DIR, get_historical
         from core.anatomy import load_parquet
         from scripts.download_historical import download_cache
 
@@ -565,8 +520,8 @@ class Instrument:
 
 @dataclass(slots=True)
 class Portfolio:
-    user : Profile 
     funds: Funds = field(default_factory=Funds)
+    positions: dict[str, Position] = field(default_factory=dict)
     scheme: Callable | None = None
 
     def update_funds(self, amount: float, used: bool = True):
@@ -578,7 +533,7 @@ class Portfolio:
             self.funds.available += amount
 
     def test_portfolio(self, target: pd.DataFrame, **kwargs):
-        """Tests the portfolio by applying the scheme to calculate the returns."""  
+        """Tests the portfolio by applying the scheme to calculate the returns."""
         if self.scheme is not None:
             return self.scheme(target, **kwargs)
         else:
@@ -609,4 +564,3 @@ class Bucket:
         elif isinstance(item, Instrument):
             key = leg_type if leg_type is not None else item.type
             self.legs[key] = item
-

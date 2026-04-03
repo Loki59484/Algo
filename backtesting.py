@@ -1,7 +1,7 @@
 from collections import defaultdict
+from functools import partial
 from datetime import datetime
 import joblib
-from rich.live import Live
 from pathlib import Path
 import pandas_ta as ta
 from tqdm import tqdm
@@ -16,7 +16,8 @@ if str(ROOT_DIR) not in sys.path:
 # IMPORTING CUSTOM MODULES
 from core import anatomy as ana
 from core.datatypes import *
-from core import upstox_func as ustox
+from core import upstox_methods as ustox
+from ui import tui
 
 INSTRUMENT_CACHE = ustox.DATA_DIR / "cache" / "instruments_cache.joblib"
 
@@ -139,6 +140,9 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
     for bucket in trader.buckets:
         call_option = bucket.legs.get("CE")
         put_option = bucket.legs.get("PE")
+        app = tui.TradingTUI(bucket=bucket, simulate=True)
+        app.run()
+        exit()
         if call_option is None or put_option is None:
             logger.warning(f"NoneType option found for bucket {bucket.date}")
             continue
@@ -251,83 +255,6 @@ trader.strategy.custom_test = partial(
     buy_condition=buy_signal,
     sell_condition=sell_signal,
 )
-
-portf = Portfolio(Profile("Loki"), funds=Funds(starting_capital=30000))
-trader.portfolio = portf
-
-
-def portfolio_scheme(target: pd.DataFrame, **kwargs):
-    for rows in target.itertuples():
-        if rows.buy_signal:
-            return "buy"
-        elif rows.sell_signal:
-            return "sell"
-        else:
-            return "hold"
-
-
-def generate_tear_sheet(report_df: pd.DataFrame, starting_capital: float = 300000.0):
-    import quantstats as qs
-
-    """
-    Converts a trade log DataFrame into a QuantStats HTML report.
-    """
-    # 1. Ensure Timestamp is a proper datetime object and set it as the index
-    # (Skip this if your Timestamp is already the index)
-    df = report_df.copy()
-    df["Timestamp"] = pd.to_datetime(df["Timestamp"])
-    df.set_index("Timestamp", inplace=True)
-
-    # 2. Group the PnL by Day (Resample to 'D')
-    # If you made 5 trades on Monday, this sums them into one daily PnL number.
-    daily_pnl = df["PnL"].resample("D").sum().fillna(0)
-
-    # 3. Build the Equity Curve
-    # Add the compounding daily PnL to your starting cash
-    equity_curve = starting_capital + daily_pnl.cumsum()
-
-    # 4. Calculate Percentage Returns
-    # This is the exact format QuantStats requires: e.g., 0.015 for +1.5%
-    daily_returns = equity_curve.pct_change().fillna(0)
-
-    # 5. Generate the HTML Report
-    # Note: 'quantstats' needs the timezone removed to calculate standard benchmarks
-    daily_returns.index = daily_returns.index.tz_localize(None)
-
-    print("Generating QuantStats Tear Sheet...")
-    qs.reports.html(
-        daily_returns, title="Options Strategy Backtest", output="backtest_report.html"
-    )
-    print("✅ Report saved as 'backtest_report.html'. Open it in your web browser!")
-
-
-def push_report_to_sheets(report_df: pd.DataFrame, sheet_url: str):
-    import gspread
-    from gspread_dataframe import set_with_dataframe
-
-    """
-    Pushes the backtest Trade Report DataFrame directly to a live Google Sheet.
-    """
-    print("Authenticating with Google Cloud...")
-    # Point this to your downloaded JSON key
-    gc = gspread.service_account(filename="google_secret.json")
-
-    # Open the specific Google Sheet using its URL
-    spreadsheet = gc.open_by_url(sheet_url)
-    worksheet = spreadsheet.sheet1
-
-    # Optional: Format the Timestamp so Google Sheets reads it cleanly
-    export_df = report_df.copy()
-    export_df["Timestamp"] = export_df["Timestamp"].astype(str)
-
-    print("Uploading data to Google Sheets...")
-    # Clear out the old backtest data
-    worksheet.clear()
-    # Paste the new DataFrame starting at cell A1
-    set_with_dataframe(worksheet, export_df)
-
-    print("✅ Trade report successfully pushed to Google Sheets!")
-
 
 report = trader.test()
 logger.info("\n-------------BACKTESTING COMPLETE-------------")

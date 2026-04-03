@@ -5,7 +5,7 @@ from queue import Queue
 from pprint import pprint
 import pandas as pd
 import config
-from core import upstox_func as ustox
+from core import upstox_methods as ustox
 import traceback
 from core import anatomy as ana
 import numpy as np
@@ -1021,7 +1021,7 @@ class App:
                 ]
             else:
                 tasks_to_run = [
-                    ustox.get_live(
+                    ustox.subscribe_ticks(
                         access_token=ustox.access_token,
                         instrument_key=self.keys,
                         output=tick_buffer,

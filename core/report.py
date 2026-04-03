@@ -1,6 +1,6 @@
 from dearpygui.dearpygui import *
 import matplotlib.pyplot as plt
-from core import upstox_func as ustox
+from core import upstox_methods as ustox
 from pprint import pprint
 import traceback
 import datetime as dt

@@ -16,7 +16,7 @@ HIST_DATA_DIR = ROOT_DIR / "data" / "historical"
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from core import upstox_func as ustox
+from core import upstox_methods as ustox
 from core.anatomy import save_parquet
 from core.datatypes import to_ist
 

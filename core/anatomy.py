@@ -2,7 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 from num2words import num2words
-import pyarrow.parquet as pq
+from functools import partial
 from pathlib import Path
 import pandas_ta as ta
 from tqdm import tqdm
@@ -35,43 +35,6 @@ global call_data, put_data, scrip_data
 ticks_ready = asyncio.Event()
 pool = ThreadPoolExecutor()
 logger = logging.getLogger(__name__)
-
-
-def save_parquet(df: pd.DataFrame, path: Path, **kwargs):
-    """
-    Saves a DataFrame to a Parquet file with metadata. The metadata is passed as keyword arguments and stored in the Parquet file's schema metadata.
-    """
-    try:
-        metadata_bytes = {
-            key.encode("utf-8"): str(value).encode("utf-8")
-            for key, value in kwargs.items()
-        }
-        table = pa.Table.from_pandas(df)
-        existing_metadata = table.schema.metadata or {}
-        final_metadata = {**existing_metadata, **metadata_bytes}
-        table = table.replace_schema_metadata(final_metadata)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(table, path)
-    except Exception as e:
-        logger.exception(f"Error saving parquet file at {path}: {e}")
-
-
-def load_parquet(path: Path):
-    """
-    Loads a DataFrame and metadata from a Parquet file. The metadata is returned as a dictionary with string keys and values.
-    If there's an error during loading, it logs the exception and returns None for both data and metadata.
-    """
-    try:
-        table = pq.read_table(path)
-        df = table.to_pandas()
-        metadata = {
-            key.decode("utf-8"): value.decode("utf-8")
-            for key, value in (table.schema.metadata or {}).items()
-        }
-        return dict(data=df, metadata=metadata)
-    except Exception as e:
-        logger.exception(f"Error loading parquet file from {path}: {e}")
-        return dict(data=None, metadata=None)
 
 
 class Strategy:
@@ -133,7 +96,7 @@ class Strategy:
             return
         if isinstance(indicators, dict):
             self.indicators.ta.append(indicators)
-            return
+            return  
         if isinstance(indicators, list):
             self.indicators.ta.extend(indicators)
             return
@@ -279,7 +242,7 @@ class Trader:
                 f"Insufficient margin to place order at price {tick.close} | Option : {instrument.key}"
             )
             return
-        trade = Trade.from_candle(
+        trade = Order.from_candle(
             qty=qty, id=order_id, candle=tick, side=instrument.type, funds=funds
         )
         instrument.position.open_position(trade=trade)
@@ -288,7 +251,7 @@ class Trader:
     def execute_sell(
         self,
         tick,
-        trade: Trade,
+        trade: Order,
         instrument: Instrument,
         qty=None,
         exit_price: float | None = None,

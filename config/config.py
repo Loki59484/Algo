@@ -2,7 +2,7 @@
 
 import asyncio
 import threading
-from core import upstox_func as ustox
+from core import upstox_methods as ustox
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 
