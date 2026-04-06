@@ -1,8 +1,9 @@
-from dataclasses import field, fields
+from __future__ import annotations
+from dataclasses import field, fields, asdict
+from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 from datetime import datetime, timedelta
 from collections import deque
-from typing import Callable
 import concurrent.futures
 from pathlib import Path
 from tqdm import tqdm
@@ -26,26 +27,27 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 # IMPORTING CUSTOM MODULES
-from core.methods import to_ist, parse_object
+from core.methods import to_ist
 
 
-class Parsable:
-    """ Base class for inheriting object parsing ability"""    
+class DatatypeBase:
+    """Base class for inheriting object parsing ability"""
 
-    def parse(cls,obj:dict):
+    @classmethod
+    def parse(cls, obj: dict):
         """
         Base method used to parse dicts recieved from Upstox into relevent dataclass
         """
-        from dataclasses import fields
-        
+
         required_fields = {f.name for f in fields(cls)}
         filtered_dict = {k: v for k, v in obj.items() if k in required_fields}
         return cls(**filtered_dict)
 
 
-
-@dataclass(slots=True)
+@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
 class Funds:
+    """"""
+
     starting_capital: float = 0
     total: float = 0
     used: float = 0
@@ -55,8 +57,8 @@ class Funds:
         self.available = self.total = self.starting_capital
 
 
-@dataclass(slots=True)
-class Greeks:
+@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
+class Greeks(DatatypeBase):
     """
     Dataclass to store greeks for a tick.
     """
@@ -68,8 +70,8 @@ class Greeks:
     rho: float = 0.0
 
 
-@dataclass(slots=True)
-class LTPC:
+@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
+class LTPC(DatatypeBase):
     """
     Dataclass to store LTPC data of a tick.
     """
@@ -80,7 +82,7 @@ class LTPC:
     cp: float = np.nan
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
 class Candle:
     """
     Dataclass to store OHLC, vol, oi data of a tick.
@@ -96,8 +98,19 @@ class Candle:
     buy_signal: bool = 0
     sell_signal: bool = 0
 
+    @classmethod
+    def load_ohlc(cls, ohlc: dict):
+        return cls(
+            timestamp=to_ist(ohlc.get("ts", "0")),
+            open=ohlc.get("open", np.nan),
+            high=ohlc.get("high", np.nan),
+            low=ohlc.get("low", np.nan),
+            close=ohlc.get("close", np.nan),
+            volume=ohlc.get("vol", 0),
+        )
 
-@dataclass(slots=True)
+
+@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
 class Tick:
     """
     Dataclass to store a tick data.
@@ -118,18 +131,6 @@ class Tick:
         if not market_data:
             return None
 
-        def load_ohlc(ohlc: dict):
-
-            candle = Candle(
-                timestamp=to_ist(ohlc.get("ts", "0")),
-                open=ohlc.get("open", np.nan),
-                high=ohlc.get("high", np.nan),
-                low=ohlc.get("low", np.nan),
-                close=ohlc.get("close", np.nan),
-                volume=ohlc.get("vol", 0),
-            )
-            return candle
-
         # EXTRACTING MARKET DATA
         market_levels = market_data.get("marketLevel", {}).get("bidAskQuote", [])
         market_ohlc = market_data.get("marketOHLC", {}).get("ohlc", [])
@@ -143,24 +144,13 @@ class Tick:
         for item in market_ohlc:
             interval = item.get("interval")
             if interval == "1d":
-                ohlc_1d_obj = load_ohlc(item)
+                ohlc_1d_obj = Candle.load_ohlc(item)
             elif interval == "I1":
-                ohlc_1m_obj = load_ohlc(item)
+                ohlc_1m_obj = Candle.load_ohlc(item)
 
         # INSTANTIATING CLASSES
-        greeks = Greeks(
-            delta=greeks.get("delta", np.nan),
-            gamma=greeks.get("gamma", np.nan),
-            theta=greeks.get("theta", np.nan),
-            vega=greeks.get("vega", np.nan),
-            rho=greeks.get("rho", np.nan),
-        )
-        ltpc = LTPC(
-            ltp=ltpc.get("ltp", np.nan),
-            ltq=ltpc.get("ltq", "0"),
-            ltt=ltpc.get("ltt", "0"),
-            cp=ltpc.get("cp", np.nan),
-        )
+        greeks = Greeks.parse(greeks)
+        ltpc = LTPC.parse(ltpc)
 
         return cls(
             key=key,
@@ -174,8 +164,8 @@ class Tick:
         )
 
 
-@dataclass(slots=True)
-class Order:
+@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
+class Order(DatatypeBase):
     """Class to hold order details recieved from upstox.
 
     Returns:
@@ -214,16 +204,9 @@ class Order:
     order_ref_id: str | None = None
     remark: str = ""
 
-    @classmethod
-    def parse_order(cls, order: dict):
-        """
-        Parses upstox order into Order class object.
-        """
-        return parse_object(cls,order)
 
-
-@dataclass(slots=True)
-class Position:
+@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
+class Position(DatatypeBase):
     """
     Dataclass to hold positions retrieved from upstox
     """
@@ -257,17 +240,6 @@ class Position:
     buy_price: float | None = None
     sell_price: float | None = None
 
-    @classmethod
-    def parse_position(cls, position: dict):
-        """Parses position update recieved from upstox.
-
-        Args:
-            position (dict): dict of position data.
-
-        Returns:
-            Position
-        """
-        return parse_object(cls,position)
 
 class Instrument:
     """
@@ -290,9 +262,6 @@ class Instrument:
         self.freeze_qty: float = 0.0
         self.type: str | None = None
         self.strike_price: float = 0.0
-        self.last_minute_ticks: list[Tick] = []
-        self.historical_df: pd.DataFrame | None = None
-        self.position: Position = Position(key=self.key)
         self.date = pd.to_datetime(date).date() if date else None
         self.historical_candles: deque[Candle] = deque(maxlen=800)
         self.expiry = pd.to_datetime(expiry).date() if expiry else None
@@ -377,10 +346,11 @@ class Instrument:
         Loads instrument data and metadata into the instance. The data is expected to be a DataFrame containing the candles, and
         the metadata is expected to contain keys like 'instrument_key', 'date', 'expiry', 'lot_size', 'strike_price', and 'freeze_quantity'.
         """
-        from core.upstox_methods import is_nse_holiday, DATA_DIR, get_historical
+        from core.upstox_methods import DATA_DIR, UpstoxClient
         from core.anatomy import load_parquet
         from scripts.download_historical import download_cache
 
+        ustox = UpstoxClient()
         CACHE_DIR = DATA_DIR / "cache"
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -422,7 +392,7 @@ class Instrument:
                 )
             else:
                 if ins.expiry is None:
-                    data = get_historical(
+                    data = ustox.get_historical(
                         from_date=prev_trading_day, to_date=prev_trading_day
                     )
                 else:
@@ -457,7 +427,7 @@ class Instrument:
         loaded_days = 0
         data_dfs = [data]
         while loaded_days < lookback:
-            if is_nse_holiday(prev_trading_day):
+            if ustox.is_nse_holiday(prev_trading_day):
                 logger.info(f"Skipping holiday/weekend : {prev_trading_day}")
                 prev_trading_day -= timedelta(days=1)
                 continue
@@ -492,56 +462,15 @@ class Instrument:
             ins.historical_candles.extend(candles)
         return ins
 
-    def to_dataframe(self, candles: deque[Candle] | None = None) -> pd.DataFrame:
-        """
-        Converts the historical candle data to a pandas DataFrame.
-        """
-        if candles is None:
-            candles = self.historical_candles
-        if candles is None:
-            return pd.DataFrame()
 
-        self.historical_df = pd.DataFrame(
-            {
-                "timestamp": [c.timestamp for c in candles],
-                "open": [c.open for c in candles],
-                "high": [c.high for c in candles],
-                "low": [c.low for c in candles],
-                "close": [c.close for c in candles],
-                "volume": [c.volume for c in candles],
-                "buy_signal": [c.buy_signal for c in candles],
-                "sell_signal": [c.sell_signal for c in candles],
-            }
-        )
-        self.historical_df.set_index("timestamp", inplace=True)
-        self.historical_df.sort_index()
-        return self.historical_df
-
-
-@dataclass(slots=True)
+@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
 class Portfolio:
     funds: Funds = field(default_factory=Funds)
     positions: dict[str, Position] = field(default_factory=dict)
-    scheme: Callable | None = None
-
-    def update_funds(self, amount: float, used: bool = True):
-        if used:
-            self.funds.used += amount
-            self.funds.available -= amount
-        else:
-            self.funds.total += amount
-            self.funds.available += amount
-
-    def test_portfolio(self, target: pd.DataFrame, **kwargs):
-        """Tests the portfolio by applying the scheme to calculate the returns."""
-        if self.scheme is not None:
-            return self.scheme(target, **kwargs)
-        else:
-            logger.warning("No scheme defined for portfolio.")
-            return target
+    orders: list[Order] = field(default_factory=list)
 
 
-@dataclass
+@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
 class Bucket:
     """A Bucket to collect instruments for being traded together."""
 

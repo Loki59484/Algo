@@ -16,14 +16,15 @@ HIST_DATA_DIR = ROOT_DIR / "data" / "historical"
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from core import upstox_methods as ustox
+from core.upstox_methods import *
 from core.anatomy import save_parquet
 from core.datatypes import to_ist
 
 # Intitiating logger
 logger = logging.getLogger(__name__)
+ustox = UpstoxClient()
 
-EXPIRED_KEYS_FILE = ustox.DATA_DIR / "expired_keys.parquet"
+EXPIRED_KEYS_FILE = DATA_DIR / "expired_keys.parquet"
 
 
 def historical(key, from_date, to_date, isexpired=False, expiry=None):
@@ -77,6 +78,7 @@ def save_datewise(
     data["date"] = to_ist(data["timestamp"]).dt.date
     grouped = data.groupby("date")
     for date, group in grouped:
+        
         file_path = (
             target_dir
             / date.strftime("%Y")
@@ -85,8 +87,7 @@ def save_datewise(
             / f"{metadata.get('interval',"1")}_{metadata.get('unit',"minutes")}"
             / f"{metadata.get('instrument_key', 'unknown')}.parquet"
         )
-        if file_path.exists():
-            continue
+
         clean_group = group.drop(columns=["date"])
         save_parquet(clean_group, file_path, date=date, **metadata)
 
@@ -110,7 +111,7 @@ def download_data(spot, is_expired=False, interval=1, unit="minutes"):
         instruments = pd.concat(instruments, ignore_index=True)
         instruments.to_parquet(EXPIRED_KEYS_FILE, index=False, engine="pyarrow")
 
-    holidays = pd.read_json(ustox.CONFIG_DIR / "holidays.json")
+    holidays = pd.read_json(CONFIG_DIR / "holidays.json")
     for exp in tqdm(expiries, "Downloading Option data", position=0, leave=True):
         exp_dt = dt.datetime.strptime(exp, "%Y-%m-%d").date()
 
@@ -122,12 +123,18 @@ def download_data(spot, is_expired=False, interval=1, unit="minutes"):
                 (instruments["instrument_type"] == "CE")
                 & (instruments["expiry"] == exp)
             ]
+            if call_keys.empty:
+                continue
             call = call_keys.iloc[len(call_keys) // 2]
+
             put_keys = instruments[
                 (instruments["instrument_type"] == "PE")
                 & (instruments["expiry"] == exp)
             ]
+            if put_keys.empty:
+                continue
             put = put_keys.iloc[len(put_keys) // 2]
+            
             call_data = historical(
                 key=call["instrument_key"],
                 expiry=exp,

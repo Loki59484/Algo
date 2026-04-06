@@ -1,12 +1,11 @@
 from collections import defaultdict
 from functools import partial
-from datetime import datetime
+import datetime as dt
 import joblib
 from pathlib import Path
 import pandas_ta as ta
 from tqdm import tqdm
 import shutil
-from datetime import time
 import sys
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -16,10 +15,11 @@ if str(ROOT_DIR) not in sys.path:
 # IMPORTING CUSTOM MODULES
 from core import anatomy as ana
 from core.datatypes import *
-from core import upstox_methods as ustox
+from core.upstox_methods import *
 from ui import tui
 
-INSTRUMENT_CACHE = ustox.DATA_DIR / "cache" / "instruments_cache.joblib"
+ustox = UpstoxClient()
+INSTRUMENT_CACHE = DATA_DIR / "cache" / "instruments_cache.joblib"
 
 print(
     "-------------TRADING SIMULATOR-------------".center(
@@ -28,7 +28,6 @@ print(
 )
 
 # SETTING UP TRADER
-trader = ana.Trader()
 strat = ana.Strategy()
 strat.add_indicators(
     [
@@ -40,36 +39,8 @@ strat.add_indicators(
         {"kind": "vwap"},
     ]
 )
-trader.strategy = strat
 
 # LOADING INSTRUMENTS
-
-files = list((ustox.DATA_DIR / "historical").rglob("*.parquet"))
-files = [file for file in files if "INDEX" not in str(file)]
-files.sort()
-
-if INSTRUMENT_CACHE.exists():
-    print("Loading instruments from cache...", end="\r")
-    insts = joblib.load(INSTRUMENT_CACHE)
-    print(f"Loaded {len(insts)} instruments from cache.", end="\r")
-else:
-    insts = Instrument.load_multiple(source=files, lookback=2)
-    joblib.dump(insts, INSTRUMENT_CACHE)
-insts_dict = {(item.key, item.date): item for item in insts}
-
-trader.add_instrument(insts_dict)
-# CREATE BUCKETS FOR EACH DAY
-daily_buckets = defaultdict(dict)
-for instrument in tqdm(
-    trader.instruments.values(), desc="Filtering instruments", leave=False
-):
-    leg_type = "CE" if "CE" in instrument.type else "PE"
-    daily_buckets[instrument.date][leg_type] = instrument
-for trade_date, legs in tqdm(
-    daily_buckets.items(), desc="Loading Buckets", leave=False
-):
-    bucket = Bucket(trade_date, legs=legs)
-    trader.buckets.append(bucket)
 
 # DEFINING BUY-SELL PARAMETERS
 
@@ -140,9 +111,6 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
     for bucket in trader.buckets:
         call_option = bucket.legs.get("CE")
         put_option = bucket.legs.get("PE")
-        app = tui.TradingTUI(bucket=bucket, simulate=True)
-        app.run()
-        exit()
         if call_option is None or put_option is None:
             logger.warning(f"NoneType option found for bucket {bucket.date}")
             continue
@@ -150,9 +118,9 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
             call_option.historical_df.itertuples(),
             put_option.historical_df.itertuples(),
         ):
-            if time(11, 00) > row_ce.timestamp.time() > time(10, 00) or time(
+            if dt.time(11, 00) > row_ce.timestamp.time() > dt.time(10, 00) or dt.time(
                 14, 00
-            ) > row_ce.timestamp.time() > time(13, 00):
+            ) > row_ce.timestamp.time() > dt.time(13, 00):
                 continue
 
             # BUY SELL CONSTRAINTS
@@ -164,7 +132,7 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
                         else True
                     )
                     if call_buy_cons:
-                        trader.execute_buy(
+                        trader.broker.buy_order(
                             tick=row_ce,
                             instrument=call_option,
                             funds=trader.portfolio.funds,
@@ -182,7 +150,7 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
                         else True
                     )
                     if put_buy_cons:
-                        trader.execute_buy(
+                        trader.broker.buy_order(
                             tick=row_pe,
                             instrument=put_option,
                             funds=trader.portfolio.funds,
@@ -201,14 +169,12 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
                     )
                     if row_ce.sell_signal or call_stoploss_hit:
                         call_sell_cons = (
-                            strategy.sell_constraints(
-                                instrument=call_option, **kwargs
-                            )
+                            strategy.sell_constraints(instrument=call_option, **kwargs)
                             if strategy.sell_constraints is not None
                             else True
                         )
                         if call_sell_cons or call_stoploss_hit:
-                            trader.execute_sell(
+                            trader.broker.sell_order(
                                 tick=row_ce,
                                 trade=bucket.open_position.open_trade,
                                 instrument=call_option,
@@ -224,14 +190,12 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
                     )
                     if row_pe.sell_signal or put_stoploss_hit:
                         put_sell_cons = (
-                            strategy.sell_constraints(
-                                instrument=put_option, **kwargs
-                            )
+                            strategy.sell_constraints(instrument=put_option, **kwargs)
                             if strategy.sell_constraints is not None
                             else True
                         )
                         if put_sell_cons or put_stoploss_hit:
-                            trader.execute_sell(
+                            trader.broker.sell_order(
                                 tick=row_pe,
                                 trade=bucket.open_position.open_trade,
                                 instrument=put_option,
@@ -240,29 +204,67 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
                                 remark="SL" if put_stoploss_hit else "-",
                             )
                             bucket.open_position = None
-        trader.portfolio.funds.starting_capital = (
-            trader.portfolio.funds.available
-        ) = trader.portfolio.funds.total
+        trader.portfolio.funds.starting_capital = trader.portfolio.funds.available = (
+            trader.portfolio.funds.total
+        )
+    return trader.instruments
+
+
+trader = ana.Trader(
+    strategy=strat,
+    portfolio=Portfolio(funds=Funds(starting_capital=300000)),
+    broker=ana.LiveBroker(client=ustox),
+    datafeed=None,
+)
 
 trader.strategy.buy_conditon = buy_signal
 trader.strategy.sell_condition = sell_signal
 trader.strategy.buy_constraints = buy_cons
 trader.strategy.sell_constraints = sell_cons
-trader.strategy.custom_test = partial(
-    procedure,
-    trader=trader,
-    strategy=trader.strategy,
-    buy_condition=buy_signal,
-    sell_condition=sell_signal,
+trader.add_executor(
+    partial(
+        procedure,
+        trader=trader,
+        strategy=trader.strategy,
+        buy_condition=buy_signal,
+        sell_condition=sell_signal,
+    )
 )
 
-report = trader.test()
-logger.info("\n-------------BACKTESTING COMPLETE-------------")
+files = list((DATA_DIR / "historical").rglob("*.parquet"))
+files = [file for file in files if "INDEX" not in str(file)]
+files.sort()
 
+if INSTRUMENT_CACHE.exists():
+    print("Loading instruments from cache...", end="\r")
+    insts = joblib.load(INSTRUMENT_CACHE)
+    print(f"Loaded {len(insts)} instruments from cache.", end="\r")
+else:
+    insts = Instrument.load_multiple(source=files, lookback=2)
+    joblib.dump(insts, INSTRUMENT_CACHE)
+insts_dict = {(item.key, item.date): item for item in insts[-3:]}
+trader.add_instrument(insts_dict)
+
+# CREATE BUCKETS FOR EACH DAY
+daily_buckets = defaultdict(dict)
+for instrument in tqdm(
+    trader.instruments.values(), desc="Filtering instruments", leave=False
+):
+    leg_type = "CE" if "CE" in instrument.type else "PE"
+    daily_buckets[instrument.date][leg_type] = instrument
+for trade_date, legs in tqdm(
+    daily_buckets.items(), desc="Loading Buckets", leave=False
+):
+    bucket = Bucket(trade_date, legs=legs)
+    trader.buckets.append(bucket)
+breakpoint()
+report = trader.strategy.custom_test()
+logger.info("\n-------------BACKTESTING COMPLETE-------------")
+print(report)
 report_file = (
-    ustox.LOG_DIR
+    LOG_DIR
     / "reports"
-    / f"trade_report_{datetime.now().strftime("%d%m%Y_%H%M%S")}.csv"
+    / f"trade_report_{dt.datetime.now().strftime("%d%m%Y_%H%M%S")}.csv"
 )
 report_file.parent.mkdir(parents=True, exist_ok=True)
 report.to_csv(report_file)

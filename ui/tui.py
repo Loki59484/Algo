@@ -1,6 +1,6 @@
 """Main file to run the live trading algorithm. This will be used to run the algo in production."""
 
-from core import upstox_methods as ustox
+from core.upstox_methods import *
 from core.datatypes import *
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Static, Input, RichLog, DataTable
@@ -11,7 +11,7 @@ from datetime import datetime, time
 import asyncio
 from functools import wraps
 
-
+ustox = UpstoxClient()
 class TradingTUI(App):
     # CSS = TUI_CSS
     CSS_PATH = "layout.tcss"
@@ -108,7 +108,7 @@ class TradingTUI(App):
             len(self.bucket.legs["CE"].historical_candles) == 0
             or len(self.bucket.legs["PE"].historical_candles) == 0
         ):
-            files = list((ustox.DATA_DIR / "historical").rglob("*.parquet"))
+            files = list((DATA_DIR / "historical").rglob("*.parquet"))
             files = [file for file in files if "INDEX" not in str(file)]
             files.sort()
             insts = Instrument.load_multiple(source=files[-2:], lookback=2)

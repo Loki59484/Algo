@@ -11,6 +11,16 @@ import logging
 # SET UP LOGGING
 logger = logging.getLogger(__name__)
 
+
+def filter_options(options: pd.DataFrame):
+    """Filter options based on strike price and option type."""
+    spot = options.iloc[0]["underlying_spot_price"]
+    calls = [(option['instrument_key'], option['market_data']['oi'],option['market_data']['ltp']) for option in options.call_options if  option['market_data']['oi']> 0]
+    sorted_calls = sorted(calls, key=lambda x: x[1], reverse=True)
+    puts = [(option['instrument_key'], option['market_data']['oi'],option['market_data']['ltp']) for option in options.put_options if  option['market_data']['oi']> 0]
+    sorted_puts = sorted(puts, key=lambda x: x[1], reverse=True)
+    return sorted_calls[5], sorted_puts[5]
+
 def parse_object(cls,obj:dict):
     """
     Base method used to parse dicts recieved from Upstox into relevent dataclass
@@ -65,17 +75,26 @@ def to_ist(target: pd.Series | list | int | float, unit="ms"):
     Converts UNIX timestamps (ms) to strict naive IST objects.
     Safely handles scalars, lists, and Pandas Series.
     """
-    target = pd.to_numeric(target, errors="coerce")
+    is_scalar = not isinstance(target, (pd.Series, list, tuple))
+    
+    if is_scalar:
+        target = pd.Series([target])
+    elif isinstance(target, (list, tuple)):
+        target = pd.Series(target)
+        
     try:
-        parsed = pd.to_datetime(target, unit="ms", utc=True)
-    except ValueError:
+        numeric_target = pd.to_numeric(target, errors="raise")
+        parsed = pd.to_datetime(numeric_target, unit=unit, utc=True)
+        
+    except (ValueError, TypeError):
         parsed = pd.to_datetime(target, utc=True)
-
-    if isinstance(parsed, pd.Series):
-        return parsed.dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
-
-    return parsed.tz_convert("Asia/Kolkata").tz_localize(None)
-
+        
+    ist_parsed = parsed.dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
+    
+    if is_scalar:
+        return ist_parsed.iloc[0]
+        
+    return ist_parsed
 
 def generate_tear_sheet(report_df: pd.DataFrame, starting_capital: float = 300000.0):
     import quantstats as qs

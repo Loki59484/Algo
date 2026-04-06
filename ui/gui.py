@@ -5,13 +5,13 @@ from queue import Queue
 from pprint import pprint
 import pandas as pd
 import config
-from core import upstox_methods as ustox
+from core.upstox_methods import *
 import traceback
 from core import anatomy as ana
 import numpy as np
 import threading
 import asyncio
-import report
+from core import report
 import math
 
 # ----------------------------
@@ -21,7 +21,7 @@ Module for gui of the to test live trading using Upstox API.
 # ----------------------------
 
 tick_buffer = asyncio.Queue(maxsize=5)
-
+ustox = UpstoxClient()
 
 class App:
 
@@ -1024,7 +1024,7 @@ class App:
                     ustox.subscribe_ticks(
                         access_token=ustox.access_token,
                         instrument_key=self.keys,
-                        output=tick_buffer,
+                        buffer=tick_buffer,
                         write=False,
                     ),
                     ana.publisher(buffer=tick_buffer),
