@@ -94,7 +94,7 @@ def save_datewise(
 
 def download_data(spot, is_expired=False, interval=1, unit="minutes"):
 
-    expiries = list(set(ustox.get_expiry(options=spot, is_expired=is_expired)))
+    expiries = list(set(ustox.get_options_with_expiry(options=spot, is_expired=is_expired)))
     if (
         os.path.exists(EXPIRED_KEYS_FILE)
         and not os.path.getsize(EXPIRED_KEYS_FILE) == 0

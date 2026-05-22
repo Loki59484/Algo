@@ -21,7 +21,7 @@ Module for gui of the to test live trading using Upstox API.
 # ----------------------------
 
 tick_buffer = asyncio.Queue(maxsize=5)
-ustox = UpstoxClient()
+#ustox = UpstoxClient()
 
 class App:
 

@@ -15,22 +15,38 @@ logger = logging.getLogger(__name__)
 def filter_options(options: pd.DataFrame):
     """Filter options based on strike price and option type."""
     spot = options.iloc[0]["underlying_spot_price"]
-    calls = [(option['instrument_key'], option['market_data']['oi'],option['market_data']['ltp']) for option in options.call_options if  option['market_data']['oi']> 0]
+    calls = [
+        (
+            option["instrument_key"],
+            option["market_data"]["oi"],
+            option["market_data"]["ltp"],
+        )
+        for option in options.call_options
+        if option["market_data"]["oi"] > 0
+    ]
     sorted_calls = sorted(calls, key=lambda x: x[1], reverse=True)
-    puts = [(option['instrument_key'], option['market_data']['oi'],option['market_data']['ltp']) for option in options.put_options if  option['market_data']['oi']> 0]
+    puts = [
+        (
+            option["instrument_key"],
+            option["market_data"]["oi"],
+            option["market_data"]["ltp"],
+        )
+        for option in options.put_options
+        if option["market_data"]["oi"] > 0
+    ]
     sorted_puts = sorted(puts, key=lambda x: x[1], reverse=True)
     return sorted_calls[5], sorted_puts[5]
 
-def parse_object(cls,obj:dict):
+
+def parse_obj_to_dataclass(cls, obj: dict):
     """
     Base method used to parse dicts recieved from Upstox into relevent dataclass
     """
     from dataclasses import fields
-    
+
     required_fields = {f.name for f in fields(cls)}
     filtered_dict = {k: v for k, v in obj.items() if k in required_fields}
     return cls(**filtered_dict)
-
 
 
 def save_parquet(df: pd.DataFrame, path: Path, **kwargs):
@@ -76,25 +92,26 @@ def to_ist(target: pd.Series | list | int | float, unit="ms"):
     Safely handles scalars, lists, and Pandas Series.
     """
     is_scalar = not isinstance(target, (pd.Series, list, tuple))
-    
+
     if is_scalar:
         target = pd.Series([target])
     elif isinstance(target, (list, tuple)):
         target = pd.Series(target)
-        
+
     try:
         numeric_target = pd.to_numeric(target, errors="raise")
         parsed = pd.to_datetime(numeric_target, unit=unit, utc=True)
-        
+
     except (ValueError, TypeError):
         parsed = pd.to_datetime(target, utc=True)
-        
+
     ist_parsed = parsed.dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
-    
+
     if is_scalar:
         return ist_parsed.iloc[0]
-        
+
     return ist_parsed
+
 
 def generate_tear_sheet(report_df: pd.DataFrame, starting_capital: float = 300000.0):
     import quantstats as qs
@@ -158,3 +175,51 @@ def push_report_to_sheets(report_df: pd.DataFrame, sheet_url: str):
 
     print("✅ Trade report successfully pushed to Google Sheets!")
 
+
+def setup_cli():
+    """
+    Function to accept arguments from cli for setting up type of engine [Live/Simulation], ui [TUI/GUI/HEADLESS] and 
+    the files or directories with files to be simulated
+
+    Returns:
+        Namespace
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Launch Trading or Simulation.",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    liveparser = subparsers.add_parser("live", help="Start live trading engine")
+    simparser = subparsers.add_parser(
+        "sim", help="Start Trading engine in simulation mode"
+    )
+    mode_group = simparser.add_mutually_exclusive_group(required=False)
+    mode_group.add_argument(
+        "-b",
+        "--bulk",
+        nargs="+",
+        metavar="PATH",
+        help="(Default Mode) Initiates engine in bulk simulation mode for given FILES or files inside the given DIRECTORY.",
+    )
+    mode_group.add_argument(
+        "-t",
+        "--tickwise",
+        type=str,
+        metavar="FILE",
+        help="Initiates engine in a chronological tickwise mode for the given FILE.",
+    )
+    ui_group = parser.add_mutually_exclusive_group(required=False)
+    ui_group.add_argument(
+        "--gui", action="store_true", help="Lauch engine with Graphical User Interface"
+    )
+    ui_group.add_argument(
+        "--tui", action="store_true", help="Lauch engine with Terminal User Interface"
+    )
+    ui_group.add_argument(
+        "--headless",
+        action="store_true",
+        help="Lauch engine in headless mode (DEFAULT)",
+    )
+    return parser.parse_args()

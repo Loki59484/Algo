@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable
 from functools import partial
 from pathlib import Path
+from random import randint
 import pandas_ta as ta
 import pandas as pd
 import asyncio
@@ -27,11 +28,10 @@ if str(ROOT_DIR) not in sys.path:
 # IMPORTING CUSTOM MODULES
 from core.datatypes import *
 from core.methods import *
-from core.upstox_methods import UpstoxClient
+from core.upstox_methods import UpstoxClient, LOG_DIR
 
 
 logger = logging.getLogger(__name__)
-ustox = UpstoxClient()
 
 
 class Broker(ABC):
@@ -39,20 +39,27 @@ class Broker(ABC):
     Abstract Base class for defining methods of an executor that manages order placement and modification.
     """
 
+    def __init__(self):
+        """
+        Initializes the Broker with an empty order history.
+        """
+        self.order_history: dict[str, Order] = {}
+
+    
     @abstractmethod
-    def buy_order(key: str, price: float, qty: int, **kwargs):
+    def buy_order(self, key: str, price: float, qty: int, **kwargs):
         pass
 
     @abstractmethod
-    def sell_order(key: str, price: float, qty: int, **kwargs):
+    def sell_order(self, key: str, price: float, qty: int, **kwargs):
         pass
 
     @abstractmethod
-    def cancel_order(id: str):
+    def cancel_order(self, id: str):
         pass
 
     @abstractmethod
-    def modify_order(id: str, **kwargs):
+    def modify_order(self, id: str, **kwargs):
         pass
 
 
@@ -66,14 +73,62 @@ class Streamer(ABC):
         pass
 
 
-class LivefeedStreamer(Streamer):
+class BaseEngine(ABC):
+    """
+    Abstract Base class for defining structure of Trading Engine
 
+    """
+
+    def __init__(self, portfolio, strategy, broker):
+        self.instruments: dict[str, Instrument] = {}
+        self.portfolio: Portfolio = portfolio
+        self.buckets: list[Bucket] = []
+        self.strategy: Strategy = strategy
+        self.broker: SimBroker | LiveBroker = broker
+
+    def add_instrument(self, item: Instrument | dict[str, Instrument]):
+        if isinstance(item, dict):
+            self.instruments = {**self.instruments, **item}
+            logger.debug(f"{len(item)} instruments added to Trader instance.")
+            return
+        if isinstance(item, Instrument):
+            self.instruments[item.key] = item
+            logger.debug(f"Instrument {item.key} added to Trader instance.")
+            return
+
+    def add_bucket(self, buckets: Bucket | list):
+        if isinstance(buckets, Bucket):
+            self.buckets.append(buckets)
+        elif isinstance(buckets, list):
+            self.buckets.extend(buckets)
+
+    @abstractmethod
+    def run(self):
+        pass
+
+
+class LivefeedStreamer(Streamer):
+    """
+    Streamer to subscribe and stream tick data for specified instruments and pass them to output buffer queue.
+    
+    Args:
+        client (UpstoxClient): Agent to subscribe the tick data.
+        instruments (dict[str, Instrument]): Instruments to be subscribed
+        buffer (asyncio.Queue): Output queue to push data into.
+    
+    """
     def __init__(
         self,
         client: UpstoxClient,
         instruments: dict[str, Instrument],
         buffer: asyncio.Queue,
     ):
+        """
+        Args:
+            client (UpstoxClient)
+            instruments (dict[str, Instrument])
+            buffer (asyncio.Queue)
+        """
         super().__init__()
         self.instruments = instruments
         self.keys: list = [i.key for i in instruments.values()]
@@ -85,17 +140,67 @@ class LivefeedStreamer(Streamer):
 
 
 class SimfeedStreamer(Streamer):
-    def __init__(self, instruments: dict[str, Instrument], buffer: asyncio.Queue):
+    """
+    Streamer to subscribe and stream tick data for specified instruments and pass them to output buffer queue.
+    
+    Args:
+        instruments (dict[str, Instrument]): Instruments for which tick data is to be streamed. 
+        buffer (asyncio.Queue): Output queue to push tick data into.
+        stopevent (asyncio.Event): Event to stop streaming tick data.
+    """
+    def __init__(self, instruments: dict[str, Instrument], buffer: asyncio.Queue,stopevent:asyncio.Event):
+        """
+        Args:
+            instruments (dict[str, Instrument])
+            buffer (asyncio.Queue) 
+            stopevent (asyncio.Event)
+        """
         super().__init__()
         self.instruments: dict[str, Instrument] = instruments
         self.keys: list = [i.key for i in instruments.values()]
         self.buffer = buffer
+        self.stopevent = stopevent
+
+    def add_instrument(self, item: Instrument | dict[str, Instrument]):
+        if isinstance(item, dict):
+            self.instruments = {**self.instruments, **item}
+            logger.debug(f"{len(item)} instruments added to Trader instance.")
+            return
+        if isinstance(item, Instrument):
+            self.instruments[item.key] = item
+            logger.debug(f"Instrument {item.key} added to Trader instance.")
+            return
 
     async def start(self):
         await self.simulator(buffer=self.buffer)
 
     async def simulator(self, buffer: asyncio.Queue):
-        pass
+        from copy import deepcopy
+        i = 0
+        items_to_simulate = deepcopy(self.instruments)
+
+        sim_data = {key:[sim_candle for sim_candle in items.historical_candles if sim_candle.timestamp.date()==items.date] for key,items in items_to_simulate.items()}
+        #total_idx = max([len(data.historical_candles) for data in items_to_simulate.values()])
+        while True:
+            try: 
+                if not self.stopevent.is_set():                    
+                    for key,data in self.instruments.items():
+                        if i==len(data.historical_candles):
+                            items_to_simulate.pop(key)
+                    if not items_to_simulate:
+                        logger.info("Simulation completed.")
+                        self.stopevent.set()
+                        return
+                    tick_data = {key:data[i] for key,data in sim_data.items()}
+                    await buffer.put(tick_data)
+                    i+=1
+                    await asyncio.sleep(0.01)
+                else:
+                    logger.info("Simulation Stopped")
+                    break
+            except Exception as e:
+                logger.exception(f"Exception while simulating.")
+
 
 
 class Strategy:
@@ -120,7 +225,6 @@ class Strategy:
             A pandas Study class object to add indicators to the dataset.
             A Study can directly be assigned to the indicators or the `add_indicators()`
             function can be to assign indicators a built-in study.
-
     Returns
     --------
     Strategy
@@ -199,15 +303,17 @@ class Strategy:
             The assumptions made by pandas_ta for columns being named `open`, `high`, `low`, `close` and `volume` expected.
         kwargs : Any
             The kwargs provided are passed directly to the callables for buy and sell condition.
-
+ 
         Return
         ---------
         pd.DataFrame
         """
+
         if isinstance(target, deque):
             if not target:
                 return None
             target = pd.DataFrame([{**asdict(candle), **kwargs} for candle in target])
+            target.set_index('timestamp',inplace=True,drop=True)
 
         if target.empty or not (self.indicators and self.indicators.ta):
             return None
@@ -225,11 +331,11 @@ class Strategy:
 
 class SimBroker(Broker):
 
-    def __init__(self):
+    def __init__(self, portfolio):
         super().__init__()
-        self.order_history: dict[str, Order] = {}
+        self.portfolio: Portfolio = portfolio
 
-    def buy_order(instrument, price, qty):
+    def buy_order(self, key: str, price: float, qty: int, **kwargs):
         """
         Function to acknowledge buy requests while simulating
 
@@ -237,9 +343,28 @@ class SimBroker(Broker):
         -------
         Order
         """
-        return super().buy_order(qty)
 
-    def sell_order(instrument, price, qty):
+        cost = price * qty
+        status = self.portfolio.funds.debit(cost)
+        if status == -1:
+            logger.warning("Order failed due to insufficient funds.")
+            return None
+        order_id = str(randint(1000000, 9999999))
+
+        if not key in self.portfolio.positions.keys():
+            self.portfolio.positions[key] = Position(
+                instrument_token=key, buy_price=price, day_buy_quantity=qty
+            )
+
+        else:
+            qty += self.portfolio.positions[key].day_buy_quantity
+            self.portfolio.positions[key].update_position(
+                buy_price=price, day_buy_quantity=qty
+            )
+        logger.info(f"{key} | Buy order placed succesfully for {qty} at {price}.")
+        return self.portfolio.positions[key], order_id
+
+    def sell_order(self, key: str, price: float, qty: int, **kwargs):
         """
         Function to acknowledge sell requests while simulating
 
@@ -247,12 +372,23 @@ class SimBroker(Broker):
         -------
         Order
         """
-        return super().sell_order(qty)
+        amount = price * qty
+        self.portfolio.funds.credit(amount)
+        if not key in self.portfolio.positions.keys():
+            logger.warning(f"Sell order not placed as no positions are open for {key}.")
+            return -1
+        qty += self.portfolio.positions[key].day_sell_quantity
+        self.portfolio.positions[key].update_position(
+            sell_price=price, day_sell_quantity=qty
+        )
+        logger.info(f"{key} | Sell order placed succesfully for {qty} at {price}.")
 
-    def cancel_order(id):
+        return 1
+
+    def cancel_order(self, id):
         return super().cancel_order()
 
-    def modify_order():
+    def modify_order(self):
         pass
 
 
@@ -260,8 +396,7 @@ class LiveBroker(Broker):
 
     def __init__(self, client):
         super().__init__()
-        self.order_history: dict[str, Order] = {}
-        self.client = client
+        self.client : UpstoxClient = client
 
     def buy_order(
         self, key: str, price: float, qty: int, sandbox: bool = False, **kwargs
@@ -272,6 +407,8 @@ class LiveBroker(Broker):
             quantity=qty,
             price=price,
             sandbox=sandbox,
+            order_type='SL-M',
+            validity='IOC'
             **kwargs,
         )
 
@@ -302,7 +439,7 @@ class LiveBroker(Broker):
             self.order_history.append(Order)
 
 
-class Trader:
+class Trader(BaseEngine):
     """
     The trading engine built for backtesting multiple instruments all at once
     using pandas powerful technical analysis tools.
@@ -315,33 +452,36 @@ class Trader:
         broker: LiveBroker | SimBroker,
         datafeed: asyncio.Queue,
     ):
-        """_summary_
-
+        """
+        Initates a trader instance for event based tick by tick trading or simulation.
         Args:
             portfolio (Portfolio): A `Portfolio` object to store positions, orders and other portfolio realted details.
             strategy (Strategy): A strategy object to store indicators and produce buy-sell signals.
             broker (LiveBroker | SimBroker): Broker object for handling order placement and their modification.
             datafeed (asyncio.Queue): Queue for holding live ticks
-            executor (Callable[[Any],None]): A custom function to execute trades in a complex strategic manner. Defaults to a built-in `_executor` function.
+
         """
-        self.instruments: dict[str, Instrument] = {}
-        self.portfolio: Portfolio = portfolio
-        self.buckets: list[Bucket] = []
-        self.strategy: Strategy = strategy
-        self.broker: SimBroker | LiveBroker = broker
+
+        super().__init__(portfolio=portfolio, strategy=strategy, broker=broker)
         self.datafeed: asyncio.Queue = datafeed
-        self.executor: Callable[[Any], None] = self._executor
+        self.executor: Callable[[Any], None] = (
+            self._executor
+        )  # for executing buy-sell logic
+        self.processor: Callable[[Any], None] = (
+            self._default_processor
+        )  # for proccessing incoming ticks
 
-    
-    def add_executor(self,executor: Callable[[Any], None]):
+    def set_executor(self, executor: Callable[[Any], None]):
         self.executor = executor
-        
 
-    def _executor(self, data: pd.Series | pd.DataFrame,sandbox=True,**kwargs):
+    def set_tick_processor(self, processor_func: Callable[[Any], None]):
+        self.processor = processor_func
+
+    def _executor(self, data: pd.Series | pd.DataFrame, sandbox=True, **kwargs):
         """
         Built-in executor function to execute a basic strategy of buying on buy signals and seeling on sell signals.
         Sandbox is enabled while placing order by default.
-        Orders are placed for a single lot size of the subject instrument. 
+        Orders are placed for a single lot size of the subject instrument.
 
         Args:
             data (pd.Series | pd.DataFrame):
@@ -359,7 +499,7 @@ class Trader:
                 price=last_tick.get("close"),
                 qty=self.instruments[last_tick.get("key")].lot_size,
                 sandbox=sandbox,
-                **kwargs
+                **kwargs,
             )
         elif last_tick.get(["sell_signal"]) == True:
             self.broker.sell_order(
@@ -367,45 +507,72 @@ class Trader:
                 price=last_tick.get("close"),
                 qty=self.instruments[last_tick.get("key")].lot_size,
                 sandbox=sandbox,
-                **kwargs
+                **kwargs,
             )
         else:
             return {}
 
-    def calculate_units(self, balance, close, lot_size):
+    def calculate_units(self, close, lot_size):
+        balance = self.portfolio.funds.available
         return min(
             max(0, int((balance / close) - ((balance / close) % lot_size))),
             (32000 - (32000 % lot_size)),
         )
 
-    def add_instrument(self, item: Instrument | dict[str, Instrument]):
-        if isinstance(item, dict):
-            self.instruments = {**self.instruments, **item}
-            logger.debug(f"{len(item)} instruments added to Trader instance.")
-            return
-        if isinstance(item, Instrument):
-            self.instruments[item.key] = item
-            logger.debug(f"Instrument {item.key} added to Trader instance.")
-            return
 
-    def add_bucket(self, buckets: Bucket | list):
-        if isinstance(buckets, Bucket):
-            self.buckets.append(buckets)
-        elif isinstance(buckets, list):
-            self.buckets.extend(buckets)
-
-    async def tick_processor(self, **kwargs):
+    async def _default_processor(self, **kwargs):
         while True:
-            
             ticks: dict[str, Tick] = await self.datafeed.get()
-
             for key, tick in ticks.items():
                 self.instruments[key].historical_candles.append(tick)
-
             tasks = [
                 asyncio.to_thread(self.strategy.apply, val.historical_candles, key=key)
                 for key, val in self.instruments.items()
             ]
-            
             results = await asyncio.gather(*tasks)
-            
+
+            for result in results:
+                self.executor(data=result)
+
+    def run(self):
+        """Kicks off the trading engine. Starts the tick_processor as an async task to start processing incoming ticks."""
+        try:
+            asyncio.run(self.processor())
+            print("started")
+        except KeyboardInterrupt:
+            logger.info("Engine killed by user.")
+        except Exception as e:
+            logger.exception(f"Exception while processing live ticks.\n{e}")
+
+
+class BulkSimulator(BaseEngine):
+
+    def __init__(
+        self,
+        portfolio: Portfolio,
+        strategy: Strategy,
+        broker: LiveBroker | SimBroker,
+    ):
+        super().__init__(portfolio=portfolio, strategy=strategy, broker=broker)
+        self.processor: Callable[[Any], None] = None
+
+    def set_processor(self, processor_func: Callable[[Any], None]):
+        self.processor = processor_func
+
+    def calculate_units(self, close, lot_size):
+        balance = self.portfolio.funds.available
+        return min(
+            max(0, int((balance / close) - ((balance / close) % lot_size))),
+            (32000 - (32000 % lot_size)),
+        )
+
+    def run(self):
+        self.processor()
+        report = self.portfolio.get_report()
+        report_file = (
+            LOG_DIR
+            / "reports"
+            / f"trade_report_{datetime.now().strftime("%d%m%Y_%H%M%S")}.csv"
+        )
+        report_file.parent.mkdir(parents=True, exist_ok=True)
+        report.to_csv(report_file)

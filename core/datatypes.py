@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import field, fields, asdict
+from typing import Literal
 from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -27,7 +28,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 # IMPORTING CUSTOM MODULES
-from core.methods import to_ist
+from core.methods import to_ist, parse_obj_to_dataclass
 
 
 class DatatypeBase:
@@ -48,13 +49,41 @@ class DatatypeBase:
 class Funds:
     """"""
 
-    starting_capital: float = 0
+    starting_capital: float  # changes only after settlement
+    pnl: float = 0
     total: float = 0
     used: float = 0
-    available: float = 0
+    available: float = 0  # always <= starting capital
 
     def __post_init__(self):
+        logger.info(f"Starting with capital:{self.starting_capital}")
         self.available = self.total = self.starting_capital
+
+    def credit(self, amount):
+        self.total += amount
+        self.available = (
+            self.total if self.total < self.starting_capital else self.starting_capital
+        )
+        self.pnl = self.total - self.starting_capital
+        self.used = max(0, self.used - amount)
+
+    def debit(self, amount):
+        if amount > self.available:
+            logger.error("Insufficient funds to proceed.")
+            return -1
+        self.total -= amount
+        self.available = (
+            self.total if self.total < self.starting_capital else self.starting_capital
+        )
+        self.pnl = self.total - self.starting_capital
+        self.used += amount
+
+    def settle(self):
+        logger.info(
+            f"Day settled with starting :{self.starting_capital} | PnL: {self.pnl} | available: {self.available}"
+        )
+        self.available = self.starting_capital = self.total
+        self.pnl = 0
 
 
 @dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
@@ -94,12 +123,13 @@ class Candle:
     low: float = np.nan
     close: float = np.nan
     volume: int = 0
+    ltp: float | None = None
     # CUSTOM FIELDS
     buy_signal: bool = 0
     sell_signal: bool = 0
 
     @classmethod
-    def load_ohlc(cls, ohlc: dict):
+    def load_ohlc(cls, ohlc: dict,ltpc: LTPC):
         return cls(
             timestamp=to_ist(ohlc.get("ts", "0")),
             open=ohlc.get("open", np.nan),
@@ -107,6 +137,7 @@ class Candle:
             low=ohlc.get("low", np.nan),
             close=ohlc.get("close", np.nan),
             volume=ohlc.get("vol", 0),
+            ltp=getattr(ltpc,'ltp',None)
         )
 
 
@@ -117,51 +148,59 @@ class Tick:
     """
 
     key: str = ""
-    timestamp: datetime | None = None
+    timestamp: datetime | None = None 
     ohlc_1d: Candle | None = None
     ohlc_1m: Candle | None = None
     greeks: Greeks | None = None
     ltpc: LTPC | None = None
     depth: list[dict] | None = None
     oi: float = 0
+    market_open : bool | None = False
 
     @classmethod
-    def parse_tick(cls, key, feed: dict, timestamp: str):
-        market_data = feed.get("marketFF", {})
-        if not market_data:
+    def parse_tick(cls, key, feed: dict, timestamp: str,market_status:bool):
+        try:
+            logger.debug("Parsing tick")
+            market_data = feed.get("marketFF", {})
+            if not market_data:
+                logger.warning("Market data not available.")
+                return None
+
+            # EXTRACTING MARKET DATA
+            market_levels = market_data.get("marketLevel", {}).get("bidAskQuote", [])
+            market_ohlc = market_data.get("marketOHLC", {}).get("ohlc", [])
+            greeks = market_data.get("optionGreeks", {})
+            ltpc = market_data.get("ltpc", {})
+            oi = market_data.get("oi", np.nan)
+
+            ohlc_1d_obj = None
+            ohlc_1m_obj = None
+            # INSTANTIATING CLASSES
+            greeks = Greeks.parse(greeks)
+            ltpc = LTPC.parse(ltpc)
+
+            for item in market_ohlc:
+                interval = item.get("interval")
+                if interval == "1d":
+                    ohlc_1d_obj = Candle.load_ohlc(ohlc=item,ltpc=ltpc)
+                elif interval == "I1":
+                    ohlc_1m_obj = Candle.load_ohlc(ohlc=item,ltpc=ltpc)
+
+
+            return cls(
+                key=key,
+                timestamp=to_ist(int(timestamp)),
+                greeks=greeks,
+                ltpc=ltpc,
+                depth=market_levels,
+                oi=oi,
+                ohlc_1d=ohlc_1d_obj,
+                ohlc_1m=ohlc_1m_obj,
+                market_open=market_status,
+            )
+        except Exception as e:
+            logger.exception(f"Exception while parsing tick: {e}")
             return None
-
-        # EXTRACTING MARKET DATA
-        market_levels = market_data.get("marketLevel", {}).get("bidAskQuote", [])
-        market_ohlc = market_data.get("marketOHLC", {}).get("ohlc", [])
-        greeks = market_data.get("optionGreeks", {})
-        ltpc = market_data.get("ltpc", {})
-        oi = market_data.get("oi", np.nan)
-
-        ohlc_1d_obj = None
-        ohlc_1m_obj = None
-
-        for item in market_ohlc:
-            interval = item.get("interval")
-            if interval == "1d":
-                ohlc_1d_obj = Candle.load_ohlc(item)
-            elif interval == "I1":
-                ohlc_1m_obj = Candle.load_ohlc(item)
-
-        # INSTANTIATING CLASSES
-        greeks = Greeks.parse(greeks)
-        ltpc = LTPC.parse(ltpc)
-
-        return cls(
-            key=key,
-            timestamp=to_ist(int(timestamp)),
-            greeks=greeks,
-            ltpc=ltpc,
-            depth=market_levels,
-            oi=oi,
-            ohlc_1d=ohlc_1d_obj,
-            ohlc_1m=ohlc_1m_obj,
-        )
 
 
 @dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
@@ -212,33 +251,42 @@ class Position(DatatypeBase):
     """
 
     exchange: str | None = None
-    multiplier: float | None = None
-    value: float | None = None
-    pnl: float | None = None
+    multiplier: float = 0
+    value: float = 0
+    pnl: float = 0
     product: str | None = None
     instrument_token: str | None = None
-    average_price: float | None = None
-    buy_value: float | None = None
-    overnight_quantity: int | None = None
-    day_buy_value: float | None = None
-    day_buy_price: float | None = None
-    overnight_buy_amount: float | None = None
-    overnight_buy_quantity: int | None = None
-    day_buy_quantity: int | None = None
-    day_sell_value: float | None = None
-    day_sell_price: float | None = None
-    overnight_sell_amount: float | None = None
-    overnight_sell_quantity: int | None = None
-    day_sell_quantity: int | None = None
-    quantity: int | None = None
-    last_price: float | None = None
-    unrealised: float | None = None
-    realised: float | None = None
-    sell_value: float | None = None
+    average_price: float = 0
+    buy_value: float = 0
+    overnight_quantity: int = 0
+    day_buy_value: float = 0
+    day_buy_price: float = 0
+    overnight_buy_amount: float = 0
+    overnight_buy_quantity: int = 0
+    day_buy_quantity: int = 0
+    day_sell_value: float = 0
+    day_sell_price: float = 0
+    overnight_sell_amount: float = 0
+    overnight_sell_quantity: int = 0
+    day_sell_quantity: int = 0
+    quantity: int = 0
+    last_price: float = 0
+    unrealised: float = 0
+    realised: float = 0
+    sell_value: float = 0
     trading_symbol: str | None = None
-    close_price: float | None = None
-    buy_price: float | None = None
-    sell_price: float | None = None
+    close_price: float = 0
+    buy_price: float = 0
+    sell_price: float = 0
+    stoploss: float = 0
+    target: float = 0
+
+    def update_position(self, **kwargs):
+        required_fields = {f.name for f in fields(self)}
+        filtered_dict = {k: v for k, v in kwargs.items() if k in required_fields}
+        for key, value in filtered_dict.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
 
 
 class Instrument:
@@ -267,16 +315,144 @@ class Instrument:
         self.expiry = pd.to_datetime(expiry).date() if expiry else None
 
     @classmethod
-    def _worker(cls, source, lookback):
-        if isinstance(source, Path):
-            return cls.load_instrument(path=source, lookback=lookback)
-        if isinstance(source, dict):
-            return cls.load_instrument(**source, lookback=lookback)
+    def load_previous(cls, client, ins: Instrument, prev_trading_day: datetime,isexpired:bool=True):
+        from core.upstox_methods import DATA_DIR
+        from core.anatomy import load_parquet
+        from scripts.download_historical import download_cache
+
+        CACHE_DIR = DATA_DIR / "cache"
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+        target_dir: Path = (
+            DATA_DIR
+            / "historical"
+            / prev_trading_day.strftime("%Y")
+            / prev_trading_day.strftime("%m")
+            / prev_trading_day.strftime("%d")
+            / f"{ins.interval}_{ins.unit}"
+            / f"{ins.key}.parquet"
+        )
+
+        CACHE_FILE = CACHE_DIR / f"{ins.key}.parquet"
+        data = None
+
+        if target_dir.exists():
+
+            data = load_parquet(target_dir).get("data", pd.DataFrame())
+            logger.info(
+                f"Data loaded for {ins.key} | Date {prev_trading_day} from file."
+            )
+
+        elif CACHE_FILE.exists():
+
+            data = pd.read_parquet(CACHE_FILE)
+            logger.info(
+                f"Data loaded for {ins.key} | Date {prev_trading_day} from cache."
+            )
         else:
-            raise TypeError(f"Unrecognized source type: {type(source)}")
+            if not isexpired:
+                logger.info("Loading historical data from Upstox.")
+                data = client.get_historical(instrument_key=ins.key,
+                    from_date=prev_trading_day, to_date=prev_trading_day
+                )
+            else:
+                logger.info("Saving cache for expired instrument from Upstox.")
+                data = download_cache(
+                    ins.key,
+                    is_expired=True,
+                    expiry=ins.expiry,
+                    date=prev_trading_day,
+                    out_path=CACHE_FILE,
+                )
+        if data is None or data.empty:
+            logger.error(
+                f"Could not load previous trading date data | Key : {ins.key} | Date = {prev_trading_day}"
+            )
+            return
+        else:
+            return data
 
     @classmethod
-    def load_multiple(cls, source: list[Path] | list[dict], lookback: list | int = 0):
+    def parse_options(
+        cls, client, options: pd.DataFrame, lookback: int = 0
+    ) -> list[Instrument]:
+        """
+        Parses a DataFrame containing options data into different Instrument class objects.
+
+        Parameters
+        ----------
+        options : pd.DataFrame
+            DataFrame containing options data where option contains fields provided directly by Upstox API.
+        lookback : int, optional
+            Number of previous days for which data is to be loaded, by default 0
+
+        Returns
+        -------
+        list[Instrument]
+        """
+
+        parsed_options = []
+        try:
+            for option in tqdm(options.itertuples(),desc="Parsing options",leave=False,total=len(options)):
+                data_dfs = []                
+                ins = cls(
+                    instrument_key=option.instrument_key,
+                    expiry=option.expiry,
+                )
+                ins.lot_size = option.lot_size
+                ins.freeze_qty = option.freeze_quantity
+                ins.type = option.instrument_type
+                ins.strike_price = option.strike_price
+                ins.date = getattr(option, "date", datetime.today().date())
+                if ins.date == datetime.today().date():
+                    data = client.get_historical(dtype='intraday',instrument_key=ins.key,
+                    from_date=ins.date, to_date=ins.date
+                    )
+                    data_dfs.append(data)
+                current_day = ins.date - timedelta(days=1)
+                while lookback > 0:
+                    if client.is_nse_holiday(current_day):
+                        logger.info(f"Skipping holiday/weekend : {current_day}")
+                        current_day -= timedelta(days=1)
+                    else:
+                        data_dfs.append(cls.load_previous(client, ins, current_day,isexpired=False))
+                        lookback -= 1
+                        current_day -= timedelta(days=1)
+
+                data_dfs.reverse()
+                if not data_dfs:
+                    continue
+                data = pd.concat(data_dfs, ignore_index=True)
+                if not data.empty:
+                    clean_data = data.copy()
+                    clean_data[["open", "high", "low", "close"]] = clean_data[
+                        ["open", "high", "low", "close"]
+                    ].ffill()
+                    clean_data["vol"] = (
+                        pd.to_numeric(clean_data["vol"], errors="coerce")
+                        .fillna(0)
+                        .astype(float)
+                    )
+                    candles = [
+                        Candle(timestamp=t, open=o, high=h, low=l, close=c, volume=v)
+                        for t, o, h, l, c, v in zip(
+                            to_ist(clean_data["timestamp"]),
+                            clean_data["open"],
+                            clean_data["high"],
+                            clean_data["low"],
+                            clean_data["close"],
+                            clean_data["vol"],
+                        )
+                    ]
+                    ins.historical_candles.extend(candles)
+                    parsed_options.append(ins)
+
+        except Exception as e:
+            logger.info(f"Exception while parsing options: \n{e}")
+        return parsed_options
+
+    @classmethod
+    def load_multiple(cls,client,source: list[Path] | list[dict], lookback: list | int = 0):
         """Loads multiple instruments at once using `concurrent.futures.ProcessPoolExecutor`.
 
         Args:
@@ -310,12 +486,12 @@ class Instrument:
         ) as executor:
             if in_ram:
                 futures = [
-                    executor.submit(cls.load_instrument, **src, lookback=lb)
+                    executor.submit(cls.load_instrument,client=client, **src, lookback=lb)
                     for src, lb in zip(source, lookbacks)
                 ]
             else:
                 futures = [
-                    executor.submit(cls.load_instrument, path=src, lookback=lb)
+                    executor.submit(cls.load_instrument,client=client, path=src, lookback=lb)
                     for src, lb in zip(source, lookbacks)
                 ]
             for future in tqdm(
@@ -337,7 +513,8 @@ class Instrument:
     @classmethod
     def load_instrument(
         cls,
-        path: Path | None = None,
+        client,
+        path: Path | str | None = None,
         lookback: int = 0,
         data: pd.DataFrame | None = None,
         metadata: dict | None = None,
@@ -351,65 +528,14 @@ class Instrument:
         from scripts.download_historical import download_cache
 
         ustox = UpstoxClient()
-        CACHE_DIR = DATA_DIR / "cache"
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
         if path is None and data is None:
             raise ValueError(
-                "Either a path to parquet file or a pd.DataFrame and a metadata must be provided. None was provided here"
+                "Either a path to parquet file or a pd.DataFrame and a metadata must be provided. None was provided."
             )
 
         if path is not None:
             data, metadata = load_parquet(path).values()
-
-        def load_previous(ins: Instrument, prev_trading_day: datetime):
-
-            target_dir: Path = (
-                DATA_DIR
-                / "historical"
-                / prev_trading_day.strftime("%Y")
-                / prev_trading_day.strftime("%m")
-                / prev_trading_day.strftime("%d")
-                / f"{ins.interval}_{ins.unit}"
-                / f"{ins.key}.parquet"
-            )
-
-            CACHE_FILE = CACHE_DIR / f"{ins.key}.parquet"
-            data = None
-
-            if target_dir.exists():
-
-                data = load_parquet(target_dir).get("data", pd.DataFrame())
-                logger.info(
-                    f"Data loaded for {ins.key} | Date {prev_trading_day} from file."
-                )
-
-            elif CACHE_FILE.exists():
-
-                data = pd.read_parquet(CACHE_FILE)
-                logger.info(
-                    f"Data loaded for {ins.key} | Date {prev_trading_day} from cache."
-                )
-            else:
-                if ins.expiry is None:
-                    data = ustox.get_historical(
-                        from_date=prev_trading_day, to_date=prev_trading_day
-                    )
-                else:
-                    data = download_cache(
-                        ins.key,
-                        is_expired=True,
-                        expiry=ins.expiry,
-                        date=prev_trading_day,
-                        out_path=CACHE_FILE,
-                    )
-            if data is None or data.empty:
-                logger.error(
-                    f"Could not load previous trading date data | Key : {ins.key} | Date = {prev_trading_day}"
-                )
-                return
-            else:
-                return data
 
         ins = cls(
             instrument_key=metadata.get("instrument_key", "UNKNOWN"),
@@ -431,7 +557,7 @@ class Instrument:
                 logger.info(f"Skipping holiday/weekend : {prev_trading_day}")
                 prev_trading_day -= timedelta(days=1)
                 continue
-            data_dfs.append(load_previous(ins, prev_trading_day))
+            data_dfs.append(cls.load_previous(client,ins, prev_trading_day))
             prev_trading_day -= timedelta(1)
             loaded_days += 1
 
@@ -467,7 +593,34 @@ class Instrument:
 class Portfolio:
     funds: Funds = field(default_factory=Funds)
     positions: dict[str, Position] = field(default_factory=dict)
-    orders: list[Order] = field(default_factory=list)
+    report: list[Trade] = field(default_factory=list)
+
+    def get_report(self, verbose=True) -> pd.DataFrame:
+
+        data = [asdict(trade) for trade in self.report]
+        df = pd.json_normalize(data)
+        if df.empty:
+            return pd.DataFrame()
+        df.sort_values(by="Buy_timestamp").reset_index(drop=True)
+        if verbose:
+            from num2words import num2words
+
+            display_df = df.copy()
+            display_df.drop(columns=["Trade_id"], inplace=True)
+            print(display_df[["PnL", "Remark"]].to_markdown(tablefmt="pretty"))
+            float_cols = display_df.select_dtypes(include=["float"]).columns
+            display_df[float_cols] = display_df[float_cols].round(2)
+            # print(display_df.to_markdown(tablefmt="pretty"))
+            print(f"Total Movement: {display_df['Movement'].sum():.2f}")
+            print(f"Final PnL: {display_df['PnL'].sum():.2f}")
+            print(f"Final PnL: {num2words(display_df['PnL'].sum(), lang='en_IN')}")
+            logger.info(
+                f"Final Results:\n{display_df.to_markdown(tablefmt="pretty",floatfmt=".2f")}"
+            )
+            logger.info(f"Total Movement: {display_df['Movement'].sum():.2f}")
+            logger.info(f"Final PnL: {display_df['PnL'].sum():.2f}")
+
+        return df
 
 
 @dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
@@ -475,6 +628,7 @@ class Bucket:
     """A Bucket to collect instruments for being traded together."""
 
     date: datetime
+    tag: str | None = None
     spot: Instrument | None = None
     legs: dict[str, Instrument] = field(default_factory=dict)
     open_position: Position | None = None
@@ -493,3 +647,22 @@ class Bucket:
         elif isinstance(item, Instrument):
             key = leg_type if leg_type is not None else item.type
             self.legs[key] = item
+
+
+@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
+class Trade:
+    Trade_id: str = None
+    Instrument_key :str = None
+    Side: str = None
+    Buy_timestamp: datetime = None
+    Buy_price: float = None
+    Buy_qty: int = None
+    Sell_timestamp: datetime = None
+    Sell_price: float = None
+    Sell_qty: int = None
+    Movement: float = None
+    PnL: float = None
+    Remark: str = ""
+    Buy_conditions: dict = None
+    Sell_conditions: dict = None
+    total: float = None

@@ -1,73 +1,73 @@
-Screen {
-    layout: grid;
-    grid-size: 2 3;
-    grid-rows: 1fr 1fr 1fr;
-    grid-columns: 2fr 1fr;
+TabPane {
+    height: 1fr;
+    width: 1fr;
+    padding: 0;
 }
 
-#funds_pane {
-    background: $panel;
+.dashboards{
+    height: 100%;
+    width: 100%;
+    layout: grid;
+    grid-size: 2 3;
+    grid-rows: 3fr 2fr 1fr;
+    grid-columns: 3fr 1fr;
+    overflow: auto auto;
+    scrollbar-gutter: auto;
+}
+
+#Analysis {
+    layout: grid;
+    grid-size: 1 2;
+    grid-rows: 1fr 1fr;
+    grid-columns: 1fr;
+}
+
+#recent-trades {
+    height: 1fr;
+    border: round cyan;
+}
+
+Footer,Header {
+    background: black; 
+}
+
+#order_pane,#position_pane ,#funds_pane {
+    background: black;
     border: round white;
     height: 100%;
     border-title-align: right;
+    text-align: right;
     padding: 1;
 }
 
-#market_data_container {
+.data_containers {
     row-span: 2;
-    background: $panel; 
     border: round cyan;
+    background: black; 
     height: 100%;
 }
 
-#call_ticks, #put_ticks {
+.calltickplots, .puttickplots {
     height: 1fr;
-    border-top: panel cyan;    
+    border-top: ascii cyan;    
     border-title-style: bold;
     border-title-align: center;
-    background: $panel; 
-    padding: 1;
-    scrollbar-visibility: hidden;
-    text-align: center;
+    background: black;
     width: 1fr;
 }
 
-#position_pane {
-    background: $panel; 
+
+#analysis_console_container,#console_container {
+    padding: 0;
+    background: black;
     border: round cyan;
-    height: 100%;
-    padding: 1;
-    border-title-align: right;
+    scrollbar-gutter:auto;
 }
 
-#console_container {
-    border: panel pink;
-    height: 100%;
-    padding: 1;
-    background: black;
-}
-
-#bash_input {
-    background: white 20%;
-    height: 20%;
-    overflow-y:hidden;
-}
-
-
-#bash_log {
-    background: black;
+#analysis_log,#bash_log {
+    background: black 0%    ;
+    overflow-y:auto;
+    scrollbar-gutter:auto;
     height: 1fr;
-    padding: 1;
-    scrollbar-visibility: hidden;
-
 }
-
-#order_pane {
-    background: $panel; 
-    border: round cyan;
-    height: 100%;
-    border-title-align: right;
-    padding: 1;
-}
-
 

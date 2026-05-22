@@ -88,7 +88,7 @@ logger.addHandler(archive_handler)
 # HANDLER TO STORE LOG OF ONLY THE LATEST RUN
 latest_handler = logging.FileHandler(LOG_FILE, mode="w")
 latest_handler.setFormatter(formatter)
-latest_handler.setLevel(logging.INFO)
+latest_handler.setLevel(logging.DEBUG)
 logger.addHandler(latest_handler)
 
 # CONSOLE HANDLER FOR STREAMING LOG TO CONSOLE
@@ -204,13 +204,18 @@ class UpstoxClient:
                     continue
 
                 # Raise an error for 500s or 400s
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except requests.exceptions.HTTPError as e:
+                    logger.exception(
+                        f"HTTPError while making request\n {response.text} "
+                    )
 
                 # If successful, return the parsed JSON immediately
                 return response.json() if return_json else response
 
             except requests.exceptions.RequestException as e:
-                logger.error(f"Network error on {url}: {e}")
+                logger.exception(f"Network error on {url}: {e}")
                 retries += 1
                 time.sleep(backoff_time)
 
@@ -408,7 +413,7 @@ class UpstoxClient:
                 if is_expired:
                     if expiry_date is None:
                         expiry_date = set(
-                            self.get_expiry(
+                            self.get_options_with_expiry(
                                 options=["NSE_INDEX|Nifty 50"], is_expired=True
                             )[::-1]
                         )
@@ -429,7 +434,7 @@ class UpstoxClient:
                     url = f"https://api.upstox.com/v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}"
             elif dtype == "intraday":
                 url = f"https://api.upstox.com/v3/historical-candle/intraday/{instrument_key}/{unit}/{interval}"
-
+            logger.debug(f"Making request to get historical data for {instrument_key} from {from_date} to {to_date}.")
             response = self._make_request(method="GET", url=url)
 
             if response:
@@ -441,7 +446,7 @@ class UpstoxClient:
                 )
                 df = df if df is not None else None
                 if df.empty:
-                    logger.error(
+                    logger.warning(
                         f"Empty Dataframe recieved for key : {instrument_key} | from_date : {from_date} | to_date : {to_date} ",
                         stack_info=True,
                     )
@@ -451,8 +456,8 @@ class UpstoxClient:
                     response if response is not None else "API Request Failed/Timeout"
                 )
 
-                logger.error(error_msg)
-                logger.error(
+                logger.warning(error_msg)
+                logger.warning(
                     f"Empty Dataframe returned for key : {instrument_key} | from_date : {from_date} | to_date : {to_date} ",
                     stack_info=True,
                 )
@@ -461,7 +466,7 @@ class UpstoxClient:
             logger.warning(f"Invalid Value for 'dtype' {dtype}")
             raise TypeError(f"Possible values for 'dtype' : {valid}")
 
-    def get_options(
+    def get_all_options(
         self, expiry="", dtype="contract", instrument_key="NSE_INDEX|Nifty 50"
     ):
         """
@@ -477,9 +482,9 @@ class UpstoxClient:
                     raise ValueError("Expiry required to pull an option chain")
             else:
                 raise ValueError("dtype can only be 'contract' or 'chain'")
-            logger.info(f"Getting Options for {instrument_key}")
             params = {"instrument_key": f"{instrument_key}", "expiry_date": f"{expiry}"}
             payload = {}
+            logger.debug(f"Making request to get all options for expiry {expiry}")
             response = self._make_request("GET", url, params=params, data=payload)
 
             if response:
@@ -496,7 +501,7 @@ class UpstoxClient:
             logger.error(v)
 
     # Getting market quote
-    def get_marketquote(self, instrument_key="NSE_INDEX|Nifty 50"):
+    def get_marketquote(self, instrument_key : str | list[str]="NSE_INDEX|Nifty 50"):
         """
         Returns market quote for given instrument(s) [upto 500 at a time]
         """
@@ -507,7 +512,7 @@ class UpstoxClient:
         response = self._make_request("GET", url, data=payload, params=params)
         if response:
             data = response["data"]
-            return
+            return data
 
     def place_order(
         self,
@@ -672,15 +677,17 @@ class UpstoxClient:
                 decoded_data = self.decode_protobuf(message)
                 # Convert the decoded data to a dictionary
                 data_dict = MessageToDict(decoded_data)
+                market_status = None
                 if "type" in data_dict.keys() and data_dict["type"] == "market_info":
                     logger.info(data_dict)
+                    market_status = True if data_dict['marketInfo']['segmentStatus']['NSE_FO'] == 'NORMAL_OPEN' else False
                 else:
                     try:
                         if not buffer is None:
                             ts = data_dict.get("currentTs", "0")
                             new_ticks = {
-                                key: Tick.parse_tick(
-                                    key, feed_data["fullFeed"], timestamp=ts
+                                (key, to_ist(ts).date()): Tick.parse_tick(
+                                    key, feed_data["fullFeed"], timestamp=ts,market_status=market_status,
                                 )
                                 for key, feed_data in data_dict.get("feeds", {}).items()
                                 if "fullFeed" in feed_data
@@ -731,11 +738,13 @@ class UpstoxClient:
             logger.info("Reconnecting to portfolio stream WebSocket...")
             await asyncio.sleep(5)  # Wait before trying to reconnect
 
-    def get_expiry(self, options: pd.DataFrame | str, is_expired: bool = False):
+    def get_options_with_expiry(
+        self, options: pd.DataFrame | str, is_expired: bool = False, return_df=False
+    ) -> list[datetime, pd.DataFrame]:
         """
-        Returns nearest weekly or monthly expiration date for given set of Options.
+        Returns nearest weekly or monthly expiration date for given set of `options` and the filtered options with that expiry date.
         """
-        if is_expired: 
+        if is_expired:
             if isinstance(options, str):
                 url = f"https://api.upstox.com/v2/expired-instruments/expiries?instrument_key={options}"
 
@@ -752,10 +761,21 @@ class UpstoxClient:
                 dump.append(expiry)
             dump = list(set(dump))
             dump.sort()
+
             if datetime.now() > dump[0]:
-                return date.strftime(dump[1], "%Y-%m-%d")
+                expiry_date = date.strftime(dump[1], "%Y-%m-%d") 
+                return expiry_date, (
+                    options.loc[options["expiry"] == expiry_date]
+                    if return_df
+                    else date.strftime(dump[1], "%Y-%m-%d")
+                )
             else:
-                return date.strftime(dump[0], "%Y-%m-%d")
+                expiry_date = date.strftime(dump[0], "%Y-%m-%d")
+                return expiry_date, (
+                    options.loc[options["expiry"] == expiry_date]
+                    if return_df
+                    else date.strftime(dump[0], "%Y-%m-%d")
+                )
 
     def get_brokerage(
         self, price, instrument_key, quantity, transaction_type="BUY", product="D"
@@ -942,6 +962,7 @@ class UpstoxClient:
             logger.error("Failed to download NSE database from Upstox.")
             return None
         try:
+            print("Updating local database",end='\r')
             with gzip.open(io.BytesIO(response.content), "rb") as gzfile:
                 decompressed_file = gzfile.read()
                 jsonstr = decompressed_file.decode(encoding="utf-8")
@@ -1012,10 +1033,18 @@ class UpstoxClient:
     def get_sandbox_access_token(self):
 
         def sandbox_authorization():
-            access_token = input(
+
+            print(
                 """ Login into https://account.upstox.com/developer/apps#sandbox and create a sandbox app to get the access token.
                                             \n Paste the new sandbox access token here : """
             )
+            lines = []
+            while True:
+                token = input()
+                if not token:
+                    break
+                lines.append(token)
+            access_token = "\n".join(lines)
             sandbox_expiry = (datetime.now() + timedelta(days=30)).strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
