@@ -276,7 +276,7 @@ class UpstoxClient:
         def _run_playwright():
             try:
                 with sync_playwright() as p:
-                    browser = p.chromium.launch(headless=True)
+                    browser = p.chromium.launch(executable_path='/usr/bin/chromium-browser',headless=True)
                     context = browser.new_context(ignore_https_errors=True)
                     page = context.new_page()
                     page.goto(login_url)
