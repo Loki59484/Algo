@@ -331,7 +331,7 @@ def main():
         bucket = Bucket(trade_date, legs=legs)
         trader.buckets.append(bucket)
         break
-
+    breakpoint()
     strat.add_indicators(
         [
             {"kind": "supertrend", "length": 14, "multiplier": 2.0},
@@ -347,7 +347,7 @@ def main():
     trader.strategy.sell_condition = sell_signal
     trader.strategy.buy_constraints = buy_cons
     trader.strategy.sell_constraints = sell_cons
-
+    
     trader.set_executor(
         partial(
             executor,

@@ -8,5 +8,6 @@
 .secrets/
 __pycache__
 .vscode/
-/data
+/data/cache/
+/data/historical/
 Algo.code-workspace

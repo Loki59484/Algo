@@ -55,7 +55,7 @@ from core.methods import *
 
 # STATIC VARIABLES
 if not ENV_PATH.exists():
-    os.env
+    os.environ
 load_dotenv(dotenv_path=ENV_PATH)
 API_KEY = os.getenv("UPSTOX_API_KEY")
 API_SECRET = os.getenv("UPSTOX_API_SECRET")
