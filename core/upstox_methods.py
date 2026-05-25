@@ -1,6 +1,9 @@
-# Module for Upstox
+"""
+Module containing Upstox functions and methods.
+NOTE : All functions are defined to be used with Upstox API. Refer to the official documentation for more details on the API and its usage.
+"""
 from google.protobuf.json_format import MessageToDict
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, Error
 from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
 from collections import deque
@@ -25,11 +28,11 @@ import ssl
 import os
 import io
 
-""" NOTE : All functions are defined to be used with Upstox API. Refer to the official documentation for more details on the API and its usage."""
 
 os.system("cls" if os.name == "nt" else "clear")
 
 # SETTING UP DIRECTORIES
+
 CORE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = CORE_DIR.parent
 ENV_PATH = ROOT_DIR / ".env"
@@ -276,7 +279,11 @@ class UpstoxClient:
         def _run_playwright():
             try:
                 with sync_playwright() as p:
-                    browser = p.chromium.launch(executable_path='/usr/bin/chromium-browser',headless=True)
+                    try:
+                        browser = p.chromium.launch(headless=True)
+                    except Error:
+                        browser = p.chromium.launch(executable_path='/usr/bin/chromium-browser', headless=True)
+
                     context = browser.new_context(ignore_https_errors=True)
                     page = context.new_page()
                     page.goto(login_url)

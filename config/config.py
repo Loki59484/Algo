@@ -1,15 +1,14 @@
-# configuration file for anatomy.py and gui.py
-
+"""
+Configuration file for the GUI. 
+"""
 import asyncio
 import threading
-from concurrent.futures import ThreadPoolExecutor
-import datetime as dt
 
-sandbox_orders = True
-stopevent = threading.Event()
-market_close = asyncio.Event()
-tick_ready = threading.Event()
-looprun = asyncio.Event()
+sandbox_orders : bool = True # Boolean to check whether to use sandox orders
+stopevent = threading.Event() # Event to stop the program
+market_close = asyncio.Event() # Event set once the market closes
+tick_ready = threading.Event() # Event to signal readiness of ticks
+looprun = asyncio.Event() 
 log_queue = None
 latency: float = 0.5
 current_index = 0

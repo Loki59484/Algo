@@ -331,7 +331,6 @@ def main():
         bucket = Bucket(trade_date, legs=legs)
         trader.buckets.append(bucket)
         break
-    breakpoint()
     strat.add_indicators(
         [
             {"kind": "supertrend", "length": 14, "multiplier": 2.0},
