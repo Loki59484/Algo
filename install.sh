@@ -1,4 +1,4 @@
-#!/bin/bash
+\#!/bin/bash
 
 # Exit immediately if a command exits with a non-zero status
 set -e
@@ -13,8 +13,8 @@ sudo apt update && sudo apt upgrade -y
 
 # 2. Create Required Directories
 echo "📁 Creating data and logs directories..."
-mkdir -p ~/Algo/data
-mkdir -p ~/Algo/logs
+mkdir -p ./Algo/data
+mkdir -p ./Algo/logs
 
 # 3. Install Miniconda (if not already installed)
 if [ ! -d "$HOME/miniconda3" ]; then
@@ -32,9 +32,12 @@ fi
 source ~/miniconda3/etc/profile.d/conda.sh
 
 # 4. Fix Conda ToS and Pydantic Bug in Base
-echo "🔧 Configuring Conda-Forge and fixing base plugins..."
+echo "🔧 Configuring Conda-Forge"
 conda activate base
-python -m pip install pydantic pydantic-settings pydantic-core --quiet
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
+echo "Conda TOS accepted!"
 conda config --add channels conda-forge
 conda config --set channel_priority strict
 
@@ -56,28 +59,28 @@ cat requirements.txt | xargs -I {} pip install --no-cache-dir {}
 echo "🎭 Installing Playwright browsers and dependencies..."
 export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
 playwright install
-sudo -E playwright install-deps
 
 # 8. Generate .env Template
 echo "🔐 Checking for .env file..."
-if [ ! -f ~/Algo/.env ]; then
+if [ ! -f ./.env ]; then
     echo "Creating .env template..."
-    cat <<EOT >> ~/Algo/.env
-MOBILE_NUM=
-UPSTOX_PIN=
-API_KEY=
-API_SECRET=
+    cat <<EOT >> ./.env
+UPSTOX_API_KEY=
+UPSTOX_API_SECRET=
+REDIRECT_URI=
+MOBILE_NUMBER=
+ALGO_NAME=
 EOT
     echo "⚠️ A blank .env file was created. You MUST edit it with your credentials before running the engine!"
 else
     echo "✅ .env file already exists."
 fi
-
+source ~/.bashrc
 echo "=================================================="
 echo "🎉 SETUP COMPLETE!"
 echo "=================================================="
 echo "Next steps:"
 echo "1. Run 'source ~/.bashrc' to refresh your terminal."
-echo "2. Edit your credentials: nano ~/Algo/.env"
+echo "2. Edit your credentials: nano ./.env"
 echo "3. Activate the environment: conda activate algo"
-echo "4. Download historical data [Nifty 50]: python $PWD/loki/scripts/download_historical.py --exp"
+echo "4. Download historical data [Nifty 50]: python $PWD/scripts/download_historical.py --exp"
