@@ -355,8 +355,6 @@ class TradingTUI(App):
                     for key, tick in ticks.items():
                         tick = SimpleNamespace(**json.loads(tick))
                         row = parse_data(tick)
-                        #with self.suspend():
-                        #    breakpoint()
                         if any(val is None for val in vars(row).values()):
                             continue
                         for attrs in self.bucketattr.values():
@@ -409,7 +407,6 @@ class TradingTUI(App):
 
         except Exception as e:
             logger.exception(f"Error in tick processor {e}")
-            # Here you would add logic to update the UI with the new tick data
 
     @work(exit_on_error=True)
     async def portfolio_streamer(self):
@@ -473,8 +470,6 @@ class TradingTUI(App):
     def on_mount(self) -> None:
         """Called when the app starts."""
         self.title = "Trading Engine"
-        # Start the background trading loop
-        # FETCHING DIFFERENT PANES
         funds_pane = self.query_one("#funds_pane", Static)
         for item in self.bucketattr.values():
 
@@ -507,7 +502,7 @@ class TradingTUI(App):
 
     def on_ready(self):
         # Start the background trading loop
-        # self.portfolio_streamer()
+        self.portfolio_streamer()
         self.set_interval(2.0,self.table_refresher)
         self.tick_processor()
 
