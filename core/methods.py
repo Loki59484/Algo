@@ -195,6 +195,8 @@ def setup_cli():
     simparser = subparsers.add_parser(
         "sim", help="Start Trading engine in simulation mode"
     )
+    simparser.add_argument("-idx","--index",required=False,default="NSE_INDEX|Nifty 50")
+    liveparser.add_argument("-idx","--index",required=False,default="NSE_INDEX|Nifty 50")
     mode_group = simparser.add_mutually_exclusive_group(required=False)
     mode_group.add_argument(
         "-b",
@@ -222,4 +224,5 @@ def setup_cli():
         action="store_true",
         help="Lauch engine in headless mode (DEFAULT)",
     )
+
     return parser.parse_args()

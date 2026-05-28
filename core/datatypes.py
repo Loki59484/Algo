@@ -50,40 +50,65 @@ class Funds:
     """"""
 
     starting_capital: float  # changes only after settlement
-    pnl: float = 0
-    total: float = 0
-    used: float = 0
-    available: float = 0  # always <= starting capital
+    pnl: float = 0.0
+    total: float = 0.0
+    used_margin: float = 0.0
+    available_margin: float = 0.0 # always <= starting capital
+    adhoc_margin: float= 0.0
+    available_margin: float= 0.0
+    exposure_margin: float= 0.0
+    notional_cash: float= 0.0
+    payin_amount: float= 0.0
+    span_margin: float= 0.0
+
+    @classmethod
+    def parse_funds_json(cls:Funds,data:dict,new:bool=True) -> Funds|None:
+        if new:
+            cls = cls(starting_capital = data['equity']['available_margin'])
+
+        cls.adhoc_margin: float= data['equity']['adhoc_margin']
+        cls.available_margin: float= data['equity']['available_margin']
+        cls.exposure_margin: float= data['equity']['exposure_margin']
+        cls.notional_cash: float= data['equity']['notional_cash']
+        cls.payin_amount: float= data['equity']['payin_amount']
+        cls.span_margin: float= data['equity']['span_margin']
+        cls.used_margin: float= data['equity']['used_margin']
+        return cls if new else None
 
     def __post_init__(self):
         logger.info(f"Starting with capital:{self.starting_capital}")
-        self.available = self.total = self.starting_capital
+        self.available_margin = self.total = self.starting_capital
 
     def credit(self, amount):
         self.total += amount
-        self.available = (
+        self.available_margin = (
             self.total if self.total < self.starting_capital else self.starting_capital
         )
         self.pnl = self.total - self.starting_capital
-        self.used = max(0, self.used - amount)
+        self.used_margin = max(0, self.used_margin - amount)
 
     def debit(self, amount):
-        if amount > self.available:
+        if amount > self.available_margin:
             logger.error("Insufficient funds to proceed.")
             return -1
         self.total -= amount
-        self.available = (
+        self.available_margin = (
             self.total if self.total < self.starting_capital else self.starting_capital
         )
         self.pnl = self.total - self.starting_capital
-        self.used += amount
+        self.used_margin += amount
 
-    def settle(self):
+    def settle(self, simulate:bool=True, client=None):
+        if not simulate and client is None:
+            logger.error("A client instance of `UpstoxClient` class is required if not simulating [simulate=False].")
         logger.info(
-            f"Day settled with starting :{self.starting_capital} | PnL: {self.pnl} | available: {self.available}"
+            f"Day settled with starting :{self.starting_capital} | PnL: {self.pnl} | available: {self.available_margin}"
         )
-        self.available = self.starting_capital = self.total
-        self.pnl = 0
+        if simulate:
+            self.available_margin = self.starting_capital = self.total
+            self.pnl = 0
+            return
+        self.parse_funds_json(cls=self,data=client.get_funds(),new=False)
 
 
 @dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
@@ -313,6 +338,7 @@ class Instrument:
         self.date = pd.to_datetime(date).date() if date else None
         self.historical_candles: deque[Candle] = deque(maxlen=800)
         self.expiry = pd.to_datetime(expiry).date() if expiry else None
+        self.exchange:Literal["NSE","BSE"]="NSE"
 
     @classmethod
     def load_previous(cls, client, ins: Instrument, prev_trading_day: datetime,isexpired:bool=True):
@@ -326,6 +352,7 @@ class Instrument:
         target_dir: Path = (
             DATA_DIR
             / "historical"
+            / ins.exchange
             / prev_trading_day.strftime("%Y")
             / prev_trading_day.strftime("%m")
             / prev_trading_day.strftime("%d")
@@ -399,11 +426,12 @@ class Instrument:
                     instrument_key=option.instrument_key,
                     expiry=option.expiry,
                 )
-                ins.lot_size = option.lot_size
-                ins.freeze_qty = option.freeze_quantity
-                ins.type = option.instrument_type
-                ins.strike_price = option.strike_price
+                ins.lot_size = getattr(option,"lot_size")
+                ins.freeze_qty = getattr(option,"freeze_quantity")
+                ins.type = getattr(option,"instrument_type")
+                ins.strike_price = getattr(option,"strike_price")
                 ins.date = getattr(option, "date", datetime.today().date())
+                ins.exchange = getattr(option,"exchange")
                 if ins.date == datetime.today().date():
                     data = client.get_historical(dtype='intraday',instrument_key=ins.key,
                     from_date=ins.date, to_date=ins.date
@@ -411,7 +439,7 @@ class Instrument:
                     data_dfs.append(data)
                 current_day = ins.date - timedelta(days=1)
                 while lookback > 0:
-                    if client.is_nse_holiday(current_day):
+                    if client.is_exchange_holiday(current_day,ins.exchange):
                         logger.info(f"Skipping holiday/weekend : {current_day}")
                         current_day -= timedelta(days=1)
                     else:
@@ -542,18 +570,18 @@ class Instrument:
             date=metadata.get("date"),
             expiry=metadata.get("expiry"),
         )
-
         ins.lot_size = int(metadata.get("lot_size", 0))
         ins.strike_price = float(metadata.get("strike_price", 0.0))
         ins.freeze_qty = float(metadata.get("freeze_quantity", 0.0))
         ins.unit = str(metadata.get("unit", "minute"))
         ins.interval = str(metadata.get("interval", "1"))
         ins.type = str(metadata.get("instrument_type", "Index"))
+        ins.exchange=str(metadata.get("exchange","NSE"))
         prev_trading_day = ins.date - timedelta(1)
         loaded_days = 0
         data_dfs = [data]
         while loaded_days < lookback:
-            if ustox.is_nse_holiday(prev_trading_day):
+            if ustox.is_exchange_holiday(prev_trading_day,exchange=ins.exchange):
                 logger.info(f"Skipping holiday/weekend : {prev_trading_day}")
                 prev_trading_day -= timedelta(days=1)
                 continue

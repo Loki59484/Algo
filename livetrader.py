@@ -40,10 +40,13 @@ def buy_signal(df, **kwargs):
     )
     cond_2 = (25 < (df["ADXR_14_2"])) & ((df["ADXR_14_2"]) < 30)
     cond_3 = df["DMP_14"] > df["DMN_14"]
-    cond_4 = (abs(df["DMP_14"] - df["DMN_14"]) > 2) & (abs(df["DMP_14"] - df["DMN_14"]) <= 10)
+    cond_4 = (abs(df["DMP_14"] - df["DMN_14"]) > 2) & (
+        abs(df["DMP_14"] - df["DMN_14"]) <= 10
+    )
     cond_6 = df["SUPERT_14_2.0"] < df["VWAP_D"]
     cond_7 = df["RSI_14"] < 61
     return (cond_1) & (cond_2) & (cond_3) & (cond_4) & (cond_6) & cond_7
+
 
 def sell_signal(df, **kwargs):
     cond_1 = (df["close"] > df["SUPERT_14_2.0"]) & (
@@ -135,7 +138,9 @@ async def executor(
 
     def execute_buy(row: tuple, option: Instrument, trader: ana.Trader):
         if (
-            dt.time(12, 00) > row.timestamp.time() > dt.time(10, 00) # Block 10 AM to 12 PM
+            dt.time(12, 00)
+            > row.timestamp.time()
+            > dt.time(10, 00)  # Block 10 AM to 12 PM
             or dt.time(14, 00) > row.timestamp.time() > dt.time(13, 00)
             or row.timestamp.time() > dt.time(15, 0)
         ):
@@ -153,7 +158,7 @@ async def executor(
             )
             if qty == 0:
                 return -1
-            funds_bf = trader.portfolio.funds.available
+            funds_bf = trader.portfolio.funds.available_margin
             status = trader.broker.buy_order(
                 key=option.key,
                 price=row.close,
@@ -195,9 +200,9 @@ async def executor(
                 status = execute_buy(latest_tick, call_option, trader)
             elif latest_tick.key == put_option.key:
                 status = execute_buy(latest_tick, put_option, trader)
-                
+
             if status == 1:
-                return  
+                return
     else:
         stoploss = bucket.open_position.stoploss
         if bucket.open_position.instrument_token == call_option.key:
@@ -228,9 +233,9 @@ async def processor(
         for key, tick in ticks.items():
             try:
                 if key in trader.instruments.keys():
-                    #if tick == trader.instruments[key].historical_candles[-1]:
-                    #    continue 
-                    trader.instruments[key].historical_candles.append(tick.ohlc_1m if isinstance(tick,Tick) else tick)
+                    trader.instruments[key].historical_candles.append(
+                        tick.ohlc_1m if isinstance(tick, Tick) else tick
+                    )
             except Exception as e:
                 logger.exception(f"Error in processor : {e}")
             logger.debug(f"Generating tasks")
@@ -245,11 +250,13 @@ async def processor(
 
 
 def main():
-
+ 
     # GETTING INSTRUMENTS/BUCKETS TO BE SIMULATED
     args = setup_cli()
     # SETUP TRADER INSTANCE
-    prtf = Portfolio(funds=Funds(starting_capital=60000))
+    #capital: Funds = Funds.parse_funds_json(ustox.get_funds())
+    capital: Funds = Funds(starting_capital=20000)
+    prtf = Portfolio(funds=capital)
     feeder_queue = asyncio.Queue(maxsize=10)
     strat = ana.Strategy()
 
@@ -261,38 +268,42 @@ def main():
         datafeed=feeder_queue,
     )
 
-    def setup_mode(mode: Literal["sim", "live"]):
+    def setup_mode(mode: Literal["sim", "live"], key: str | list[str]):
         if mode == "live":
             _, insts = ustox.get_options_with_expiry(
-                ustox.get_all_options(), return_df=True
+                ustox.get_all_options(instrument_key=key), return_df=True
             )
-            market_quote = ustox.get_marketquote(instrument_key=insts['instrument_key'].to_list())
+            market_quote = ustox.get_marketquote(
+                instrument_key=insts["instrument_key"].to_list()
+            )
             best_ce = None
             max_ce_volume = -1
-            
+
             best_pe = None
             max_pe_volume = -1
 
-            # Loop through the returned live data to find the highest volume
-            for inst_key, quote in market_quote.items():
-                # Assuming 'target_key' holds your instrument key (e.g., 'NSE_FO|12345')
-                opt_type = insts.loc[insts['instrument_key'] == quote['instrument_token'], 'instrument_type'].item()
-                # Using 'volume' as the primary liquidity metric. 
-                # You could also add OI into a custom formula if desired: (volume * 0.7) + (oi * 0.3)
-                volume = quote.get('volume', 0)
-                if opt_type == 'CE':
+            for _, quote in market_quote.items():
+                opt_type = insts.loc[
+                    insts["instrument_key"] == quote["instrument_token"],
+                    "instrument_type",
+                ].item()
+                volume = quote.get("volume", 0)
+                if opt_type == "CE":
                     if volume > max_ce_volume:
                         max_ce_volume = volume
-                        best_ce = quote.get('instrument_token')
-                        
-                elif opt_type == 'PE':
+                        best_ce = quote.get("instrument_token")
+
+                elif opt_type == "PE":
                     if volume > max_pe_volume:
                         max_pe_volume = volume
-                        best_pe = quote .get('instrument_token')
+                        best_pe = quote.get("instrument_token")
 
-            options= insts[(insts['instrument_key']==best_ce)|(insts['instrument_key']==best_pe)]
+            options = insts[
+                (insts["instrument_key"] == best_ce)
+                | (insts["instrument_key"] == best_pe)
+            ]
 
-            insts = Instrument.parse_options(client=ustox,options=options,lookback=2)
+            insts = Instrument.parse_options(client=ustox, options=options, lookback=2)
 
         elif mode == "sim":
             files = []
@@ -317,7 +328,7 @@ def main():
         return sim_dict
 
     # CREATE BUCKETS FOR EACH DAY
-    tradable_insts = setup_mode(args.command)
+    tradable_insts = setup_mode(args.command,args.index)
     daily_buckets = defaultdict(dict)
 
     for instrument in tqdm(
@@ -346,7 +357,7 @@ def main():
     trader.strategy.sell_condition = sell_signal
     trader.strategy.buy_constraints = buy_cons
     trader.strategy.sell_constraints = sell_cons
-    
+
     trader.set_executor(
         partial(
             executor,
@@ -363,7 +374,9 @@ def main():
         try:
             stopevent = asyncio.Event()
             trading_items = [data.key for data in bucket.legs.values()]
-            trading_insts = {k:v for k,v in tradable_insts.items() if k[0] in trading_items}
+            trading_insts = {
+                k: v for k, v in tradable_insts.items() if k[0] in trading_items
+            }
             if args.command == "live":
                 logger.info("Live streamer created.")
                 simfeeder = ana.LivefeedStreamer(ustox, trading_insts, feeder_queue)

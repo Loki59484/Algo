@@ -2,6 +2,7 @@
 Module containing Upstox functions and methods.
 NOTE : All functions are defined to be used with Upstox API. Refer to the official documentation for more details on the API and its usage.
 """
+
 from google.protobuf.json_format import MessageToDict
 from playwright.sync_api import sync_playwright, Error
 from datetime import datetime, timedelta, date
@@ -27,7 +28,6 @@ import sys
 import ssl
 import os
 import io
-
 
 os.system("cls" if os.name == "nt" else "clear")
 
@@ -198,6 +198,14 @@ class UpstoxClient:
             try:
                 response = self.session.request(method, url, **kwargs)
 
+                if response.status_code == 401:
+                    logger.error(f"HTTP 401 Hit! Retrying after {backoff_time}s...")
+                    self.access_token = self.get_access_token()
+                    time.sleep(backoff_time)
+                    retries += 1
+                    backoff_time *= 2
+                    continue
+
                 # 3. Handle Rate Limit Error (429)
                 if response.status_code == 429:
                     logger.error(f"HTTP 429 Hit! Backing off for {backoff_time}s...")
@@ -211,7 +219,7 @@ class UpstoxClient:
                     response.raise_for_status()
                 except requests.exceptions.HTTPError as e:
                     logger.exception(
-                        f"HTTPError while making request\n {response.text} "
+                        f"HTTP error while making request\n {response.text} "
                     )
 
                 # If successful, return the parsed JSON immediately
@@ -282,7 +290,9 @@ class UpstoxClient:
                     try:
                         browser = p.chromium.launch(headless=True)
                     except Error:
-                        browser = p.chromium.launch(executable_path='/usr/bin/chromium-browser', headless=True)
+                        browser = p.chromium.launch(
+                            executable_path="/usr/bin/chromium-browser", headless=True
+                        )
 
                     context = browser.new_context(ignore_https_errors=True)
                     page = context.new_page()
@@ -373,7 +383,9 @@ class UpstoxClient:
         self,
         instrument_key="",
         expiry_date="",
-        underlying="NSE_INDEX|Nifty 50",
+        underlying: Literal[
+            "NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"
+        ] = "NSE_INDEX|Nifty 50",
         keys_only=True,
     ):  # Getting expired instruments for a stock/index
         """
@@ -402,7 +414,9 @@ class UpstoxClient:
     def get_historical(
         self,
         dtype="historical",
-        instrument_key="NSE_INDEX|Nifty 50",
+        instrument_key: Literal[
+            "NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"
+        ] = "NSE_INDEX|Nifty 50",
         interval: int = 1,
         unit: str = "minutes",
         to_date=date.today(),
@@ -421,7 +435,7 @@ class UpstoxClient:
                     if expiry_date is None:
                         expiry_date = set(
                             self.get_options_with_expiry(
-                                options=["NSE_INDEX|Nifty 50"], is_expired=True
+                                options=instrument_key, is_expired=True
                             )[::-1]
                         )
                         for date in expiry_date:
@@ -441,7 +455,9 @@ class UpstoxClient:
                     url = f"https://api.upstox.com/v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}"
             elif dtype == "intraday":
                 url = f"https://api.upstox.com/v3/historical-candle/intraday/{instrument_key}/{unit}/{interval}"
-            logger.debug(f"Making request to get historical data for {instrument_key} from {from_date} to {to_date}.")
+            logger.debug(
+                f"Making request to get historical data for {instrument_key} from {from_date} to {to_date}."
+            )
             response = self._make_request(method="GET", url=url)
 
             if response:
@@ -474,7 +490,12 @@ class UpstoxClient:
             raise TypeError(f"Possible values for 'dtype' : {valid}")
 
     def get_all_options(
-        self, expiry="", dtype="contract", instrument_key="NSE_INDEX|Nifty 50"
+        self,
+        expiry="",
+        dtype="contract",
+        instrument_key: Literal[
+            "NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"
+        ] = "NSE_INDEX|Nifty 50",
     ):
         """
         Returns available options for specified stock/index instrument.
@@ -508,7 +529,12 @@ class UpstoxClient:
             logger.error(v)
 
     # Getting market quote
-    def get_marketquote(self, instrument_key : str | list[str]="NSE_INDEX|Nifty 50"):
+    def get_marketquote(
+        self,
+        instrument_key: (
+            Literal["NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"] | list[str]
+        ) = "NSE_INDEX|Nifty 50",
+    ):
         """
         Returns market quote for given instrument(s) [upto 500 at a time]
         """
@@ -645,8 +671,10 @@ class UpstoxClient:
     async def subscribe_ticks(
         self,
         buffer: asyncio.Queue,
-        instrument_key="NSE_INDEX|Nifty 50",
-        mode="full_d30",
+        instrument_key:Literal[
+            "NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"
+        ] = "NSE_INDEX|Nifty 50",
+        mode:Literal["ltpc","option_greeks","full","full_d30"]="full_d30",
     ) -> Tick:
         """
         Get data steam of live market data for given instrument keys.
@@ -687,14 +715,22 @@ class UpstoxClient:
                 market_status = None
                 if "type" in data_dict.keys() and data_dict["type"] == "market_info":
                     logger.info(data_dict)
-                    market_status = True if data_dict['marketInfo']['segmentStatus']['NSE_FO'] == 'NORMAL_OPEN' else False
+                    market_status = (
+                        True
+                        if data_dict["marketInfo"]["segmentStatus"][f"{instrument_key[:3]}_FO"]
+                        == "NORMAL_OPEN"
+                        else False
+                    )
                 else:
                     try:
                         if not buffer is None:
                             ts = data_dict.get("currentTs", "0")
                             new_ticks = {
                                 (key, to_ist(ts).date()): Tick.parse_tick(
-                                    key, feed_data["fullFeed"], timestamp=ts,market_status=market_status,
+                                    key,
+                                    feed_data["fullFeed"],
+                                    timestamp=ts,
+                                    market_status=market_status,
                                 )
                                 for key, feed_data in data_dict.get("feeds", {}).items()
                                 if "fullFeed" in feed_data
@@ -770,7 +806,7 @@ class UpstoxClient:
             dump.sort()
 
             if datetime.now() > dump[0]:
-                expiry_date = date.strftime(dump[1], "%Y-%m-%d") 
+                expiry_date = date.strftime(dump[1], "%Y-%m-%d")
                 return expiry_date, (
                     options.loc[options["expiry"] == expiry_date]
                     if return_df
@@ -935,7 +971,7 @@ class UpstoxClient:
             )
             return None
 
-    def exchanges_status(self, exchange="NSE"):
+    def exchanges_status(self, exchange:Literal["BSE","NSE"]="NSE"):
         url = f"https://api.upstox.com/v2/market/status/{exchange}"
 
         response = self._make_request("GET", url)
@@ -963,23 +999,27 @@ class UpstoxClient:
             )
 
     def update_database(self):
-        url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
-        response = self._make_request("GET", url, stream=True, return_json=False)
-        if not response:
-            logger.error("Failed to download NSE database from Upstox.")
-            return None
-        try:
-            print("Updating local database",end='\r')
-            with gzip.open(io.BytesIO(response.content), "rb") as gzfile:
-                decompressed_file = gzfile.read()
-                jsonstr = decompressed_file.decode(encoding="utf-8")
-                json_data = json.loads(jsonstr)
-                df = pd.DataFrame(json_data)
-                df.to_parquet(DATA_DIR / "NSE_DATABASE.parquet", engine="pyarrow")
-                logger.info("Local database updated successfully.")
-        except Exception as e:
-            logger.exception("Exception while updating local database")
-            return None
+        indices = ["NSE", "BSE"]
+        for idx in indices:
+            url = f"https://assets.upstox.com/market-quote/instruments/exchange/{idx}.json.gz"
+            response = self._make_request("GET", url, stream=True, return_json=False)
+            if not response:
+                logger.error(f"Failed to download {idx} database from Upstox.")
+                return None
+            try:
+                print("Updating local database", end="\r")
+                with gzip.open(io.BytesIO(response.content), "rb") as gzfile:
+                    decompressed_file = gzfile.read()
+                    jsonstr = decompressed_file.decode(encoding="utf-8")
+                    json_data = json.loads(jsonstr)
+                    df = pd.DataFrame(json_data)
+                    df.to_parquet(
+                        DATA_DIR / f"{idx}_DATABASE.parquet", engine="pyarrow"
+                    )
+                    logger.info("Local database updated successfully.")
+            except Exception as e:
+                logger.exception("Exception while updating local database")
+                return None
 
     def exitall(self):
         url = "https://api.upstox.com/v2/order/positions/exit"
@@ -997,7 +1037,7 @@ class UpstoxClient:
                 stack_info=True,
             )
 
-    def is_nse_holiday(self, date: datetime) -> bool:
+    def is_exchange_holiday(self, date: datetime,exchange:Literal["NSE","BSE"]="NSE") -> bool:
 
         if date.weekday() >= 5:
             return True
@@ -1022,7 +1062,7 @@ class UpstoxClient:
         year_holidays = _HOLIDAY_CACHE[year]
 
         if year_holidays is not None:
-            if date_str in year_holidays and "NSE" in year_holidays[date_str]:
+            if date_str in year_holidays and exchange in year_holidays[date_str]:
                 return True
             return False
 

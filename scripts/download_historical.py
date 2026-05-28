@@ -78,9 +78,10 @@ def save_datewise(
     data["date"] = to_ist(data["timestamp"]).dt.date
     grouped = data.groupby("date")
     for date, group in grouped:
-        
-        file_path = (
-            target_dir
+        key = metadata.get('instrument_key', None)
+        exchange = f"{metadata.get('exchange',key[:3])}"
+        file_path = (target_dir
+            /exchange
             / date.strftime("%Y")
             / date.strftime("%m")
             / date.strftime("%d")
@@ -117,7 +118,7 @@ def download_data(spot, is_expired=False, interval=1, unit="minutes"):
 
         if not (
             (holidays["date"] == exp)
-            & (holidays["closed_exchanges"].str.contains("NSE", na=False))
+            & (holidays["closed_exchanges"].str.contains(spot[:3], na=False))
         ).any():
             call_keys = instruments[
                 (instruments["instrument_type"] == "CE")

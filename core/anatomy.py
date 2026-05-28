@@ -513,7 +513,7 @@ class Trader(BaseEngine):
             return {}
 
     def calculate_units(self, close, lot_size):
-        balance = self.portfolio.funds.available
+        balance = self.portfolio.funds.available_margin
         return min(
             max(0, int((balance / close) - ((balance / close) % lot_size))),
             (32000 - (32000 % lot_size)),
@@ -560,7 +560,7 @@ class BulkSimulator(BaseEngine):
         self.processor = processor_func
 
     def calculate_units(self, close, lot_size):
-        balance = self.portfolio.funds.available
+        balance = self.portfolio.funds.available_margin
         return min(
             max(0, int((balance / close) - ((balance / close) % lot_size))),
             (32000 - (32000 % lot_size)),

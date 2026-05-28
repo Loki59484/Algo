@@ -29,19 +29,22 @@ print(
 # DEFINING BUY-SELL PARAMETERS
 
 
+# DEFINING BUY-SELL PARAMETERS
 def buy_signal(df, **kwargs):
-    cond_1 = (df["close"] > df["SUPERT_14_2.0"]) & (
-        df["SUPERT_14_2.0"] > df["SUPERT_14_2.0"].shift(1)
-    )
-    cond_2 = (25 < (df["ADXR_14_2"])) & ((df["ADXR_14_2"]) < 30)
-    cond_3 = df["DMP_14"] > df["DMN_14"]
-    cond_4 = (abs(df["DMP_14"] - df["DMN_14"]) > 2) & (
-        abs(df["DMP_14"] - df["DMN_14"]) <= 10
-    )
-    cond_6 = df["SUPERT_14_2.0"] < df["VWAP_D"]
-    cond_7 = df["RSI_14"] < 61
-    return (cond_1) & (cond_2) & (cond_3) & (cond_4) & (cond_6) & cond_7
-
+    try:
+        cond_1 = (df["close"] > df["SUPERT_14_2.0"]) & (
+            df["SUPERT_14_2.0"] > df["SUPERT_14_2.0"].shift(1)
+        )
+        cond_2 = (25 < (df["ADXR_14_2"])) & ((df["ADXR_14_2"]) < 30)
+        cond_3 = df["DMP_14"] > df["DMN_14"]
+        cond_4 = (abs(df["DMP_14"] - df["DMN_14"]) > 2) & (
+            abs(df["DMP_14"] - df["DMN_14"]) <= 10
+        )
+        cond_6 = df["SUPERT_14_2.0"] < df["VWAP_D"]
+        cond_7 = df["RSI_14"] < 61
+        return (cond_1) & (cond_2) & (cond_3) & (cond_4) & (cond_6) & cond_7
+    except Exception as e:
+        logger.exception(e)
 
 def sell_signal(df, **kwargs):
     cond_1 = (df["close"] > df["SUPERT_14_2.0"]) & (
@@ -62,6 +65,8 @@ def sell_cons(**kwargs):
 
 
 def _worker(df: pd.DataFrame, study: ta.Study, kwargs):
+    if len(df) < 200:
+        return pd.DataFrame(columns=df.columns)
     return ana.Strategy.apply_study(df, study=study, **kwargs)
 
 
@@ -89,23 +94,28 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
 
     # EXTRACT TRADING DAY DATA, DROPPING WARM UP CANDLES
     for subject, enriched_df in zip(flat_subjects, finished_dfs):
-        truncated_df = enriched_df[enriched_df.index.date >= subject.date]
-        truncated_df = truncated_df.rename(
-            columns={
-                "SUPERT_14_2.0": "SUPERT",
-                "SUPERTl_14_2.0": "SUPERTl",
-                "SUPERTs_14_2.0": "SUPERTs",
-                "SUPERTd_14_2.0": "SUPERTd",
-                "ADX_14": "ADX",
-                "ADXR_14_2": "ADXR",
-                "DMP_14": "DMP",
-                "DMN_14": "DMN",
-                "ATRr_14": "ATR",
-                "EMA_200": "EMA",
-                "RSI_14": "RSI",
-            }
-        )
-        subject.historical_df = truncated_df.reset_index()
+        try:
+            if enriched_df.empty:
+                continue
+            truncated_df = enriched_df[enriched_df.index.date >= subject.date]
+            truncated_df = truncated_df.rename(
+                columns={
+                    "SUPERT_14_2.0": "SUPERT",
+                    "SUPERTl_14_2.0": "SUPERTl",
+                    "SUPERTs_14_2.0": "SUPERTs",
+                    "SUPERTd_14_2.0": "SUPERTd",
+                    "ADX_14": "ADX",
+                    "ADXR_14_2": "ADXR",
+                    "DMP_14": "DMP",
+                    "DMN_14": "DMN",
+                    "ATRr_14": "ATR",
+                    "EMA_200": "EMA",
+                    "RSI_14": "RSI",
+                }
+            )
+            subject.historical_df = truncated_df.reset_index()
+        except Exception as e:
+            breakpoint(header=f"{e}")
     logger.info("Technical analysis completed")
     trader.buckets.sort(key=lambda b: b.date)
 
@@ -202,29 +212,32 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
         if call_option is None or put_option is None:
             logger.warning(f"NoneType option found for bucket {bucket.date}")
             continue
+        try:
+            if not hasattr(call_option,"historical_df") or not hasattr(put_option,"historical_df"):
+                continue
+            for row_ce, row_pe in zip(
+                call_option.historical_df.itertuples(),
+                put_option.historical_df.itertuples(),
+            ):
+                if bucket.open_position is None:
+                    if row_ce.buy_signal:
+                        status = execute_buy(row_ce, call_option, trader)
+                        if status == 1:
+                            continue
 
-        for row_ce, row_pe in zip(
-            call_option.historical_df.itertuples(),
-            put_option.historical_df.itertuples(),
-        ):
-
-            if bucket.open_position is None:
-                if row_ce.buy_signal:
-                    status = execute_buy(row_ce, call_option, trader)
-                    if status == 1:
-                        continue
-
-                if row_pe.buy_signal:
-                    status = execute_buy(row_pe, put_option, trader)
-                    if status == 1:
-                        continue
-            else:
-                stoploss = bucket.open_position.stoploss
-                target = bucket.open_position.target
-                if bucket.open_position.instrument_token == call_option.key:
-                    execute_sell(row_ce, call_option, trader, stoploss, target)
-                elif bucket.open_position.instrument_token == put_option.key:
-                    execute_sell(row_pe, put_option, trader, stoploss, target)
+                    if row_pe.buy_signal:
+                        status = execute_buy(row_pe, put_option, trader)
+                        if status == 1:
+                            continue
+                else:
+                    stoploss = bucket.open_position.stoploss
+                    target = bucket.open_position.target
+                    if bucket.open_position.instrument_token == call_option.key:
+                        execute_sell(row_ce, call_option, trader, stoploss, target)
+                    elif bucket.open_position.instrument_token == put_option.key:
+                        execute_sell(row_pe, put_option, trader, stoploss, target)
+        except Exception as e:
+            breakpoint(header=f"{e}")
         trader.portfolio.funds.settle()
     logger.info("Simulation Complete")
 
@@ -255,14 +268,14 @@ trader.strategy.sell_constraints = sell_cons
 trader.set_processor(
     partial(
         procedure,
-        trader=trader,
+        trader=trader,  
         strategy=trader.strategy,
         buy_condition=buy_signal,
         sell_condition=sell_signal,
     )
 )
-
-files = list((DATA_DIR / "historical").rglob("*.parquet"))
+args = setup_cli()
+files = list((DATA_DIR / "historical" / args.bulk[0]).rglob("*.parquet"))
 files = [file for file in files if "INDEX" not in str(file)]
 files.sort()
 
@@ -272,10 +285,9 @@ if INSTRUMENT_CACHE.exists():
     print(f"Loaded {len(insts)} instruments from cache.", end="\r")
 else:
     insts = Instrument.load_multiple(client=None, source=files, lookback=0)
-    joblib.dump(insts, INSTRUMENT_CACHE)
+    #joblib.dump(insts, INSTRUMENT_CACHE)
 insts_dict = {(item.key, item.date): item for item in insts}
 trader.add_instrument(insts_dict)
-
 # CREATE BUCKETS FOR EACH DAY
 daily_buckets = defaultdict(dict)
 
