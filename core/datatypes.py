@@ -450,6 +450,7 @@ class Instrument:
                 data_dfs.reverse()
                 if not data_dfs:
                     continue
+                data_dfs = [df for df in data_dfs if not df.empty]
                 data = pd.concat(data_dfs, ignore_index=True)
                 if not data.empty:
                     clean_data = data.copy()
