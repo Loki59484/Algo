@@ -367,6 +367,31 @@ class UpstoxClient:
             self.update_database()
         return access_token
 
+    def set_static_ip(self,prim_ip:str,sec_ip:str=""):
+
+        url = 'https://api.upstox.com/v2/user/ip'
+
+        data = {
+            'primary_ip': f"{prim_ip}",
+            'secondary_ip': f"{sec_ip}"
+        }
+        headers = {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'Authorization': f"Bearer {self.get_access_token()}"
+        }
+        response = self._make_request("PUT",url=url,data=data,headers=headers)
+        logger.info(response)
+
+    def get_static_ip(self):
+
+        url = 'https://api.upstox.com/v2/user/ip'
+
+        response = self._make_request("GET",url=url)
+        return response['data']
+        
+
+
     def get_funds(self):  # Getting funds available
         funds_url = "https://api.upstox.com/v2/user/get-funds-and-margin"
         response = self._make_request("GET", funds_url)
