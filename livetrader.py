@@ -203,13 +203,15 @@ async def executor(
 
             if status == 1:
                 return
+        trader.portfolio.funds.settle()
     else:
         stoploss = bucket.open_position.stoploss
         if bucket.open_position.instrument_token == call_option.key:
             execute_sell(latest_tick, call_option, trader, stoploss)
         elif bucket.open_position.instrument_token == put_option.key:
             execute_sell(latest_tick, put_option, trader, stoploss)
-
+        trader.portfolio.funds.settle()
+    
 
 # PROCESSOR TO HANDLE INCOMING TICKS
 async def processor(
@@ -254,8 +256,8 @@ def main():
     # GETTING INSTRUMENTS/BUCKETS TO BE SIMULATED
     args = setup_cli()
     # SETUP TRADER INSTANCE
-    #capital: Funds = Funds.parse_funds_json(ustox.get_funds())
-    capital: Funds = Funds(starting_capital=20000)
+    capital: Funds = Funds.parse_funds_json(ustox.get_funds())
+    #capital: Funds = Funds(starting_capital=20000)
     prtf = Portfolio(funds=capital)
     feeder_queue = asyncio.Queue(maxsize=10)
     strat = ana.Strategy()
@@ -263,8 +265,8 @@ def main():
     trader = ana.Trader(
         portfolio=prtf,
         strategy=strat,
-        broker=ana.SimBroker(portfolio=prtf),
-        # broker=ana.LiveBroker(ustox),
+        #broker=ana.SimBroker(portfolio=prtf),
+        broker=ana.LiveBroker(ustox),
         datafeed=feeder_queue,
     )
 
