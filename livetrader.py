@@ -93,6 +93,7 @@ async def executor(
 
     latest_tick = next(data.iloc[[-1]].itertuples())
     ui_socket: zmq.asyncio.Socket = kwargs.get("ui_socket", None)
+
     if ui_socket:
         last_row = data.iloc[-1]
         last_row["timestamp"] = last_row.name

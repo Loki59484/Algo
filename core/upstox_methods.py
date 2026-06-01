@@ -197,10 +197,11 @@ class UpstoxClient:
 
             try:
                 response = self.session.request(method, url, **kwargs)
-
                 if response.status_code == 401:
                     logger.error(f"HTTP 401 Hit! Retrying after {backoff_time}s...")
+                    old_token = self.access_token
                     self.access_token = self.get_access_token()
+                    print(self.access_token==old_token)
                     time.sleep(backoff_time)
                     retries += 1
                     backoff_time *= 2
@@ -693,7 +694,7 @@ class UpstoxClient:
         feed_response.ParseFromString(buffer)
         return feed_response
 
-    async def subscribe_ticks(
+    async def  subscribe_ticks(
         self,
         buffer: asyncio.Queue,
         instrument_key:Literal[
@@ -733,6 +734,7 @@ class UpstoxClient:
             # Continuously receive and decode data from WebSocket
             logger.info(f"Getting Data for {instrument_key}")
             while True:
+                logger.info("New round")
                 message = await websocket.recv()
                 decoded_data = self.decode_protobuf(message)
                 # Convert the decoded data to a dictionary
@@ -742,13 +744,15 @@ class UpstoxClient:
                     logger.info(data_dict)
                     market_status = (
                         True
-                        if data_dict["marketInfo"]["segmentStatus"][f"{instrument_key[:3]}_FO"]
+                        if data_dict["marketInfo"]["segmentStatus"][f"{instrument_key[0][:3]}_FO"]
                         == "NORMAL_OPEN"
                         else False
                     )
                 else:
                     try:
+
                         if not buffer is None:
+                            logger.info("Preparing data for buffer")
                             ts = data_dict.get("currentTs", "0")
                             new_ticks = {
                                 (key, to_ist(ts).date()): Tick.parse_tick(
@@ -760,12 +764,16 @@ class UpstoxClient:
                                 for key, feed_data in data_dict.get("feeds", {}).items()
                                 if "fullFeed" in feed_data
                             }
+                            logger.info("Data ready")
+
+
                             if buffer.full():
                                 try:
                                     buffer.get_nowait()
                                 except asyncio.QueueEmpty:
                                     pass
                             buffer.put_nowait(new_ticks)
+                            logger.info("Data put")
                         else:
                             logger.error("Failed to put data into the output queue.")
                     except KeyboardInterrupt:

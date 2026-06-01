@@ -350,7 +350,10 @@ class TradingTUI(App):
             await asyncio.sleep(1)
             while True:
                 await asyncio.sleep(0.01)
-                ticks: dict = await self.socket.recv_json()                
+                logger.info("tick awaited")
+                ticks: dict = await self.socket.recv_json()     
+                logger.info("tick recvd")
+                
                 try:
                     for key, tick in ticks.items():
                         tick = SimpleNamespace(**json.loads(tick))

@@ -126,14 +126,32 @@ def download_data(spot, is_expired=False, interval=1, unit="minutes"):
             ]
             if call_keys.empty:
                 continue
+
+            best_ce = None
+            max_ce_volume = -1
+
+            best_pe = None
+            max_pe_volume = -1
+
+            for ce in call_keys.itertuples():
+                if ce.volume > max_ce_volume:
+                        max_ce_volume = ce.volume
+                        best_ce = ce.get("instrument_token")
+            
             call = call_keys.iloc[len(call_keys) // 2]
 
             put_keys = instruments[
                 (instruments["instrument_type"] == "PE")
                 & (instruments["expiry"] == exp)
             ]
+
             if put_keys.empty:
                 continue
+            for pe in put_keys.itertuples():
+                if pe.volume > max_pe_volume:
+                        max_pe_volume = pe.volume
+                        best_pe = ce.get("instrument_token")
+
             put = put_keys.iloc[len(put_keys) // 2]
             
             call_data = historical(

@@ -1,6 +1,6 @@
 from dearpygui.dearpygui import *
 import matplotlib.pyplot as plt
-from core.upstox_methods import *
+from upstox_methods import *
 from pprint import pprint
 import traceback
 import datetime as dt
@@ -13,7 +13,7 @@ import os
 Edit only checkpoint file if it exists
 Create it not. 
 """
-
+ustox = UpstoxClient()
 
 def predicted_days(x1, y1, a, force=False):
 

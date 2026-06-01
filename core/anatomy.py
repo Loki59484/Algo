@@ -136,6 +136,7 @@ class LivefeedStreamer(Streamer):
         self.client: UpstoxClient = client
 
     async def start(self):
+        logger.info("Logger started, subscribing to ticks.")
         await self.client.subscribe_ticks(instrument_key=self.keys, buffer=self.buffer)
 
 
@@ -561,6 +562,7 @@ class BulkSimulator(BaseEngine):
 
     def calculate_units(self, close, lot_size):
         balance = self.portfolio.funds.available_margin
+        logger.info(balance)
         return min(
             max(0, int((balance / close) - ((balance / close) % lot_size))),
             (32000 - (32000 % lot_size)),
