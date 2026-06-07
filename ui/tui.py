@@ -31,7 +31,7 @@ import io
 import pandas as pd
 import numpy as np
 from collections import deque,defaultdict
-
+from core import planner
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -105,6 +105,20 @@ class TradingTUI(App):
             with TabPane("Analysis", id="trade_analysis"):
                 yield Button('Refresh',compact= True,id='refresh_table')
                 yield tpd.DataFrameTable(id='recent-trades')
+                
+                with Vertical(id="analysis_console_container"):
+                    yield RichLog(id="analysis_log",
+                                    highlight=True,
+                                    markup=True,
+                                )
+                    yield Input(
+                        placeholder=">>>",
+                        id="analysis_input"
+                    )
+
+            with TabPane("Planner", id="planner"):
+                planner_plt = self.bucketattr[f'bucket_{idx}']['call_plt'] = PlotextPlot(id=f"call_plot_{idx}", classes='tickplots')
+                yield 
                 with Vertical(id="analysis_console_container"):
                     yield RichLog(id="analysis_log",
                                     highlight=True,
@@ -118,7 +132,6 @@ class TradingTUI(App):
                 yield Static(
                     "This is the second tab. Add your settings or alternative views here."
                 )
-
         yield Footer()
 
     def on_button_pressed(self,event: Button.Pressed):

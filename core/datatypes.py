@@ -149,9 +149,10 @@ class Candle:
     close: float = np.nan
     volume: int = 0
     ltp: float | None = None
+    
     # CUSTOM FIELDS
-    buy_signal: bool = 0
-    sell_signal: bool = 0
+    buy_signal: bool = None
+    sell_signal: bool = None
 
     @classmethod
     def load_ohlc(cls, ohlc: dict,ltpc: LTPC):
@@ -344,7 +345,7 @@ class Instrument:
     def load_previous(cls, client, ins: Instrument, prev_trading_day: datetime,isexpired:bool=True):
         from core.upstox_methods import DATA_DIR
         from core.anatomy import load_parquet
-        from scripts.download_historical import download_cache
+        from tools.download_historical import download_cache
 
         CACHE_DIR = DATA_DIR / "cache"
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -554,7 +555,7 @@ class Instrument:
         """
         from core.upstox_methods import DATA_DIR, UpstoxClient
         from core.anatomy import load_parquet
-        from scripts.download_historical import download_cache
+        from tools.download_historical import download_cache
 
         ustox = UpstoxClient()
 
@@ -634,21 +635,30 @@ class Portfolio:
         if verbose:
             from num2words import num2words
 
-            display_df = df.copy()
+        display_df = df.copy()
+        if "Trade_id" in display_df.columns:
             display_df.drop(columns=["Trade_id"], inplace=True)
-            print(display_df[["PnL", "Remark"]].to_markdown(tablefmt="pretty"))
-            float_cols = display_df.select_dtypes(include=["float"]).columns
-            display_df[float_cols] = display_df[float_cols].round(2)
-            # print(display_df.to_markdown(tablefmt="pretty"))
-            print(f"Total Movement: {display_df['Movement'].sum():.2f}")
-            print(f"Final PnL: {display_df['PnL'].sum():.2f}")
-            print(f"Final PnL: {num2words(display_df['PnL'].sum(), lang='en_IN')}")
-            logger.info(
-                f"Final Results:\n{display_df.to_markdown(tablefmt="pretty",floatfmt=".2f")}"
-            )
-            logger.info(f"Total Movement: {display_df['Movement'].sum():.2f}")
-            logger.info(f"Final PnL: {display_df['PnL'].sum():.2f}")
 
+        # 1. Round the dataframe FIRST
+        float_cols = display_df.select_dtypes(include=["float"]).columns
+        display_df[float_cols] = display_df[float_cols].round(2)
+
+        # 2. Print with floatfmt=".2f" to forcefully format all floats in the markdown table
+        print(
+            display_df[["Buy_timestamp", "PnL", "Remark", "Buy_qty", "Sell_qty", "Buy_price", "Sell_price"]]
+            .to_markdown(tablefmt="pretty", floatfmt=".2f")
+        )
+
+        print(f"Total Movement: {display_df['Movement'].sum():.2f}")
+        print(f"Final PnL: {display_df['PnL'].sum():.2f}")
+        print(f"Final PnL (words): {num2words(display_df['PnL'].sum().round(), lang='en_IN')}")
+
+        # 3. Use single quotes inside the method arguments to avoid breaking the f-string
+        logger.info(
+            f"Final Results:\n{display_df.to_markdown(tablefmt='pretty', floatfmt='.2f')}"
+        )
+        logger.info(f"Total Movement: {display_df['Movement'].sum():.2f}")
+        logger.info(f"Final PnL: {display_df['PnL'].sum():.2f}")
         return df
 
 

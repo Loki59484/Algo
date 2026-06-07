@@ -178,7 +178,7 @@ def push_report_to_sheets(report_df: pd.DataFrame, sheet_url: str):
 
 def setup_cli():
     """
-    Function to accept arguments from cli for setting up type of engine [Live/Simulation], ui [TUI/GUI/HEADLESS] and 
+    Function to accept arguInitiates engine in a chronological tickwise mode for the given FILEments from cli for setting up type of engine [Live/Simulation], ui [TUI/GUI/HEADLESS] and 
     the files or directories with files to be simulated
 
     Returns:
@@ -204,6 +204,12 @@ def setup_cli():
         nargs="+",
         metavar="PATH",
         help="(Default Mode) Initiates engine in bulk simulation mode for given FILES or files inside the given DIRECTORY.",
+    )
+    simparser.add_argument(
+        "-nc",
+        "--no-cache",
+        action="store_true",
+        help="Forces the engine to ignore cached data.",
     )
     mode_group.add_argument(
         "-t",

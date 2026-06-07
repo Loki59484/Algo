@@ -11,7 +11,7 @@ from core import anatomy as ana
 import numpy as np
 import threading
 import asyncio
-from core import report
+from core import planner
 import math
 
 # ----------------------------
@@ -717,7 +717,7 @@ class App:
             set_exit_callback(callback=self.shutdown)
             maximize_viewport()
             show_viewport()
-            report.report_window(show=False)
+            planner.report_window(show=False)
             render_dearpygui_frame()
             with theme() as inittheme:
                 with theme_component(mvAll):

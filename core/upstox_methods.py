@@ -342,6 +342,7 @@ class UpstoxClient:
                     SECRETS_PATH.mkdir(parents=True, exist_ok=True)
                     with open(TOKEN_FILE, "w") as outputfile:
                         outputfile.write(json.dumps(data))
+                        self.access_token = data['access_token']
                         return data["access_token"]
 
             except Exception as e:
@@ -626,6 +627,22 @@ class UpstoxClient:
         if response:
             return response
 
+    def get_trades_for_day(self):
+        
+        url = 'https://api.upstox.com/v2/order/trades/get-trades-for-day'
+        response = self._make_request("GET", url=url)
+        return response["data"] if response else None
+    
+    def get_order_history(self, order_id=""):
+        """
+        Get order history for the specified order.
+        """
+        url = 'https://api.upstox.com/v2/order/history'
+        params = {"order_id": f"{order_id}"}
+        response = self._make_request("GET", url=url, params=params)
+        
+        return response["data"] if response else None
+        
     def get_order_details(self, order_id=""):
         """
         Get details of the specified order.
@@ -1024,7 +1041,7 @@ class UpstoxClient:
 
         response = self._make_request("GET", url)
         if response:
-            return Position.parse(response["data"])
+            return response["data"]
         else:
             logger.error(
                 f"Error while fetching positions |\n{response}",

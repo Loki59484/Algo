@@ -24,7 +24,6 @@ from core.datatypes import to_ist
 logger = logging.getLogger(__name__)
 ustox = UpstoxClient()
 
-EXPIRED_KEYS_FILE = DATA_DIR / "expired_keys.parquet"
 
 
 def historical(key, from_date, to_date, isexpired=False, expiry=None):
@@ -63,7 +62,9 @@ def download_cache(
     date: dt.datetime,
     out_path: Path = None,
 ):
-    history = historical(option_key, isexpired=is_expired, from_date=date,to_date=date, expiry=expiry)
+    history = historical(
+        option_key, isexpired=is_expired, from_date=date, to_date=date, expiry=expiry
+    )
     if history is None or history.empty:
         raise Exception("Failed to save cache!")
     if out_path:
@@ -78,10 +79,11 @@ def save_datewise(
     data["date"] = to_ist(data["timestamp"]).dt.date
     grouped = data.groupby("date")
     for date, group in grouped:
-        key = metadata.get('instrument_key', None)
+        key = metadata.get("instrument_key", None)
         exchange = f"{metadata.get('exchange',key[:3])}"
-        file_path = (target_dir
-            /exchange
+        file_path = (
+            target_dir
+            / exchange
             / date.strftime("%Y")
             / date.strftime("%m")
             / date.strftime("%d")
@@ -93,13 +95,16 @@ def save_datewise(
         save_parquet(clean_group, file_path, date=date, **metadata)
 
 
-def download_data(spot, is_expired=False, interval=1, unit="minutes"):
+def download_data(spot, is_expired=False, interval=1, unit="minutes", force=False):
+    EXPIRED_KEYS_FILE = DATA_DIR / f"{spot[:3]}_expired_keys.parquet"
 
-    expiries = list(set(ustox.get_options_with_expiry(options=spot, is_expired=is_expired)))
+    expiries = list(
+        set(ustox.get_options_with_expiry(options=spot, is_expired=is_expired))
+    )
     if (
         os.path.exists(EXPIRED_KEYS_FILE)
         and not os.path.getsize(EXPIRED_KEYS_FILE) == 0
-    ):
+    ) and not force:
         instruments = pd.read_parquet(EXPIRED_KEYS_FILE)
     else:
         instruments = []
@@ -120,40 +125,31 @@ def download_data(spot, is_expired=False, interval=1, unit="minutes"):
             (holidays["date"] == exp)
             & (holidays["closed_exchanges"].str.contains(spot[:3], na=False))
         ).any():
+            underlying = ustox.get_historical(instrument_key=spot,
+                from_date=exp_dt - dt.timedelta(days=7), to_date=exp_dt
+            )
+            step = 100 if "BSE" in spot or "NSE" in spot else 100
+            offset = 600
+            spot_price = round(underlying.open.iloc[0]/ step) * step
+            
             call_keys = instruments[
                 (instruments["instrument_type"] == "CE")
                 & (instruments["expiry"] == exp)
             ]
             if call_keys.empty:
                 continue
-
-            best_ce = None
-            max_ce_volume = -1
-
-            best_pe = None
-            max_pe_volume = -1
-
-            for ce in call_keys.itertuples():
-                if ce.volume > max_ce_volume:
-                        max_ce_volume = ce.volume
-                        best_ce = ce.get("instrument_token")
-            
-            call = call_keys.iloc[len(call_keys) // 2]
+            call_keys = call_keys.set_index("strike_price")
+            call = call_keys.loc[spot_price-offset]
 
             put_keys = instruments[
                 (instruments["instrument_type"] == "PE")
                 & (instruments["expiry"] == exp)
             ]
-
             if put_keys.empty:
                 continue
-            for pe in put_keys.itertuples():
-                if pe.volume > max_pe_volume:
-                        max_pe_volume = pe.volume
-                        best_pe = ce.get("instrument_token")
+            put_keys = put_keys.set_index("strike_price")
+            put = put_keys.loc[spot_price+offset]
 
-            put = put_keys.iloc[len(put_keys) // 2]
-            
             call_data = historical(
                 key=call["instrument_key"],
                 expiry=exp,
@@ -167,9 +163,6 @@ def download_data(spot, is_expired=False, interval=1, unit="minutes"):
                 isexpired=is_expired,
                 from_date=exp_dt - dt.timedelta(days=7),
                 to_date=exp_dt,
-            )
-            underlying = ustox.get_historical(
-                from_date=exp_dt - dt.timedelta(days=7), to_date=exp_dt
             )
             if call_data.empty or put_data.empty or underlying.empty:
                 continue
@@ -217,7 +210,7 @@ months  | 1           | Jan 2000       | No limit
         type=str,
         help="Download underlying data | Requires the instrument key for the underlying instrument",
     )
-    parser.add_argument(
+    parser.add_argument(    
         "-i",
         "--interval",
         default=1,
@@ -237,9 +230,11 @@ months  | 1           | Jan 2000       | No limit
     parser.add_argument(
         "-exp", "--expired", action="store_true", help="Download expired option data"
     )
+    parser.add_argument(
+        "-f", "--force", action="store_true", help="Force download of data"
+    )
 
     args = parser.parse_args()
-
     # Setup verbose logging
     if args.verbose:
         logging.basicConfig(level=logging.INFO)
@@ -249,5 +244,5 @@ months  | 1           | Jan 2000       | No limit
     is_expired = True if args.expired else False
     # Download data
     download_data(
-        args.spot, is_expired=is_expired, interval=args.interval, unit=args.unit
+        args.spot, is_expired=is_expired, interval=args.interval, unit=args.unit, force=args.force
     )

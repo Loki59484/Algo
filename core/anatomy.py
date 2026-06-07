@@ -288,8 +288,8 @@ class Strategy:
         buy_cond = kwargs.get("buy_condition", None)
         sell_cond = kwargs.get("sell_condition", None)
 
-        target["buy_signal"] = buy_cond(target, **kwargs) if buy_cond else False
-        target["sell_signal"] = sell_cond(target, **kwargs) if sell_cond else False
+        target["buy_signal"] = buy_cond(target, **kwargs) if buy_cond is not None else None
+        target["sell_signal"] = sell_cond(target, **kwargs) if sell_cond is not None else None
 
         return target
 
@@ -321,12 +321,11 @@ class Strategy:
 
         target.ta.study(self.indicators)
         target["buy_signal"] = (
-            self.buy_conditon(target, **kwargs) if self.buy_conditon else False
+            self.buy_conditon(target, **kwargs) if self.buy_conditon is not None else None
         )
         target["sell_signal"] = (
-            self.sell_condition(target, **kwargs) if self.sell_condition else False
+            self.sell_condition(target, **kwargs) if self.sell_condition is not None else None
         )
-
         return target
 
 
@@ -408,7 +407,7 @@ class LiveBroker(Broker):
             quantity=qty,
             price=price,
             sandbox=sandbox,
-            order_type='SL-M',
+            order_type='LIMIT',
             validity='IOC'
             **kwargs,
         )
@@ -422,6 +421,8 @@ class LiveBroker(Broker):
             quantity=qty,
             price=price,
             sandbox=sandbox,
+            order_type="LIMIT",
+            validity="IOC"
             **kwargs,
         )
 
