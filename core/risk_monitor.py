@@ -35,13 +35,12 @@ async def monitor_orders():
             update = await data_queue.get()
             
             # Check if the event is a completed order (position closed/opened)
-            if True:# getattr(update, 'status', '').lower() == 'complete':
+            if getattr(update, 'status', '').lower() == 'complete':
                 logger.info(f"Order filled for {update.trading_symbol}. Checking Daily PnL...")
                 
                 # Fetch your current total realized MTM (Profit/Loss)
                 # Ensure get_funds() is actually an async method returning your PnL
-                current_pnl = await ustox.get_funds()
-                # breakpoint() # Keep in mind breakpoint() will pause the background server
+                current_pnl = sum([int(item['realised']) for item in ustox.get_positions()])
                 
                 logger.info(f"Current Realized PnL: ₹{current_pnl}")
 
@@ -50,8 +49,8 @@ async def monitor_orders():
                     logger.warning(f"🚨 TARGET REACHED (₹{current_pnl}). ACTIVATING KILL SWITCH! 🚨")
                     
                     # Fire the Kill Switch
-                    ustox.kill_switch(["NSE_FO","BSE_FO"], action='DISABLE') 
-                    
+                    resp = ustox.kill_switch(["NSE_FO","BSE_FO"], action='DISABLE') 
+                    logger.info(f"{resp}")
                     logger.info("Kill switch activated successfully. Sleeping until tomorrow...")
                     
                     # Sleep for 12 hours to prevent rapid re-triggering today
@@ -61,7 +60,7 @@ async def monitor_orders():
         logger.info("Monitor shutting down.")
         ws_task.cancel() # Clean up the background task
     except Exception as e:
-        logger.error(f"Encountered error: {e}. Reconnecting in 5s...")
+        logger.exception(f"Encountered error: {e}. Reconnecting in 5s...")
         ws_task.cancel() # Clean up before attempting reconnect (if you add a retry loop later)
         await asyncio.sleep(5)
 
