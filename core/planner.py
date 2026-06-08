@@ -133,7 +133,8 @@ class Planner:
             self.surplus = round(planned_remainder - net_target, 2)
             
             # Print cleanly without index numbers and without truncating to 10 rows
-            print(df[["Days", "Date", "Profit", "Remainder", "Status"]].to_markdown(index=False))
+            if __name__ == '__main__':
+                print(df[["Days", "Date", "Profit", "Remainder", "Status"]].to_markdown(index=False))
             return df
             
         except Exception as e:
@@ -199,7 +200,7 @@ class Planner:
 
         # 3. Pass BOTH to the predictor
         force_flag = True if self.prev_days == 0 else args.force
-        self.predict_days(net_target, gross_target, self.starting_amount, args.multiplier, force_flag)
+        return self.predict_days(net_target, gross_target, self.starting_amount, args.multiplier, force_flag)
         
 
     def to_cli(self):
