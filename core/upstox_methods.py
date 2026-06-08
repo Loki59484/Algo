@@ -391,8 +391,18 @@ class UpstoxClient:
 
         response = self._make_request("GET",url=url)
         return response['data']
+    
+    def kill_switch(self,segments: list[Literal['BSE_EQ', 'NSE_EQ', 'NCD_FO', 'BCD_FO', 'NSE_FO', 'BSE_FO', 'MCX_FO', 'NSE_COM']],action: Literal['ENABLE','DISABLE']):
+        url = 'https://api.upstox.com/v2/user/kill-switch'
         
-
+        payload = [ {
+        "segment": f"{segment}",
+        "action": f"{action}"
+        } 
+        for segment in segments]
+        
+        response = self._make_request("POST", url=url,data=json.dumps(payload))
+        return response
 
     def get_funds(self):  # Getting funds available
         funds_url = "https://api.upstox.com/v2/user/get-funds-and-margin"
@@ -515,6 +525,8 @@ class UpstoxClient:
         else:
             logger.warning(f"Invalid Value for 'dtype' {dtype}")
             raise TypeError(f"Possible values for 'dtype' : {valid}")
+
+
 
     def get_all_options(
         self,

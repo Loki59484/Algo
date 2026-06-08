@@ -2,6 +2,7 @@ from collections import defaultdict
 from types import SimpleNamespace
 from functools import partial
 import datetime as dt
+import numpy as np
 import joblib
 from pathlib import Path
 import pandas_ta as ta
@@ -19,7 +20,7 @@ from core.datatypes import *
 from core.upstox_methods import *
 
 # from core.planner import Planner
-# ustox = UpstoxClient()
+ustox = UpstoxClient()
 
 print(
     "--------------------SIMULATOR--------------------".center(
@@ -29,35 +30,54 @@ print(
 
 # DEFINING BUY-SELL PARAMETERS
 
+def generate_prob_matrix(client:UpstoxClient,instrument:Instrument,lookback, force_rebuild=False):
+    back_data = Instrument.load_previous(client=client,ins=instrument,prev_trading_day=instrument.date-timedelta(days=lookback), isexpired=True)
+    return back_data
 
-# DEFINING BUY-SELL PARAMETERS
-def buy_signal(df, **kwargs):
+
+
+def buy_signal(df, probability_matrix, **kwargs):
     try:
-        # --- SHARED MOMENTUM (Both CE and PE need the same ADXR waking up) ---
+        # ---------------------------------------------------------
+        # STEP 1: Discretize the Data into States (Vectorized)
+        # ---------------------------------------------------------
+        # You still need to define what "State" the row is in based on your indicators.
+        trend_up = df["close"] > df["SUPERT_14_2.0"]
         adxr_trend = (16 < df["ADXR_14_2"]) & (df["ADXR_14_2"] < 25)
         
-        dmi_gap = abs(df["DMP_14"] - df["DMN_14"])
+        df['State'] = np.where(trend_up & adxr_trend, 'Strong Bull',
+                      np.where(trend_up & ~adxr_trend, 'Weak Bull',
+                      np.where(~trend_up & adxr_trend, 'Strong Bear', 'Weak Bear')))
 
-        ce_signal = (
-            (df["close"] > df["SUPERT_14_2.0"]) & 
-            (df["SUPERT_14_2.0"] > df["SUPERT_14_2.0"].shift(1)) 
-            & # Supertrend steps UP
-            adxr_trend & 
-            (df["DMP_14"] > df["DMN_14"]) & # Bulls in control
-            (dmi_gap > 10) &                # Massive bullish gap
-            (df["RSI_14"] > 59)             # Spot RSI shows extreme breakout strength
-        )
+        # ---------------------------------------------------------
+        # STEP 2: The Matrix Math (Vectorized Inference)
+        # ---------------------------------------------------------
+        # Convert the textual states into a binary One-Hot Matrix (Rows x 4 States)
+        # We reindex to ensure the columns exactly match the rows of your probability_matrix
+        state_matrix = pd.get_dummies(df['State']).reindex(
+            columns=probability_matrix.index, fill_value=0
+        ).to_numpy()
 
-        pe_signal = (
-            (df["close"] < df["SUPERT_14_2.0"]) & 
-            (df["SUPERT_14_2.0"] < df["SUPERT_14_2.0"].shift(1)) 
-            & # Supertrend steps DOWN
-            adxr_trend & 
-            (df["DMN_14"] > df["DMP_14"]) & # Bears in control
-            (dmi_gap > 11) &                # Massive bearish gap
-            (df["RSI_14"] < 37)             # Spot RSI shows extreme breakdown weakness
-        )
+        # MULTIPLY!
+        # (N_Rows x 4 States) @ (4 States x 3 Outcomes) = (N_Rows x 3 Probabilities)
+        # Let's assume your matrix columns are ['DOWN', 'FLAT', 'UP']
+        prob_output = state_matrix @ probability_matrix.to_numpy()
 
+        # Extract the probability columns into the dataframe for easy handling
+        df['Prob_DOWN'] = prob_output[:, 0]
+        df['Prob_FLAT'] = prob_output[:, 1]
+        df['Prob_UP'] = prob_output[:, 2]
+
+        # ---------------------------------------------------------
+        # STEP 3: The Confidence Threshold (Bridge to Actions)
+        # ---------------------------------------------------------
+        # Define how certain the matrix must be to trigger a trade
+        CONFIDENCE_THRESHOLD = 0.65  # 65% probability required
+
+        ce_signal = df['Prob_UP'] > CONFIDENCE_THRESHOLD
+        pe_signal = df['Prob_DOWN'] > CONFIDENCE_THRESHOLD
+
+        # Return exactly what your existing execution engine expects
         signal_col = pd.Series(None, index=df.index, dtype=object)
         signal_col[ce_signal] = "CE"
         signal_col[pe_signal] = "PE"
@@ -311,8 +331,7 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
         call_option.historical_df["ATR"] = call_option.historical_df.ta.atr()
         put_option.historical_df["ATR"] = put_option.historical_df.ta.atr()
         spot = bucket.spot
-
-        breakpoint()
+                
         if call_option is None or put_option is None:
             logger.warning(f"NoneType option found for bucket {bucket.date}")
             continue
@@ -424,6 +443,7 @@ daily_buckets = defaultdict(dict)
 for instrument in tqdm(
     trader.instruments.values(), desc="Filtering instruments", leave=False
 ):
+    breakpoint()
     leg_type = (
         "CE"
         if "CE" in instrument.type

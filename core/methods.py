@@ -7,10 +7,27 @@ from pathlib import Path
 import pyarrow as pa
 import pandas as pd
 import logging
+import hashlib
+import json
 
 # SET UP LOGGING
 logger = logging.getLogger(__name__)
 
+def generate_cache_key(date_str, params):
+    """
+    Creates a unique filename based on the exact parameters used.
+    If you change a parameter, the hash changes, and the script builds a new matrix.
+    """
+    # Create a string representation of your exact current rules
+    param_string = json.dumps(params, sort_keys=True)
+    
+    # Hash it to keep the filename short and clean
+    param_hash = hashlib.md5(param_string.encode()).hexdigest()[:8]
+    
+    return f"{date_str}_v_{param_hash}"
+
+
+    
 
 def filter_options(options: pd.DataFrame):
     """Filter options based on strike price and option type."""
