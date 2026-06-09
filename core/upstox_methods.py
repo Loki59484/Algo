@@ -100,9 +100,17 @@ console_handler.setFormatter(formatter)
 console_handler.setLevel(logging.ERROR)
 logger.addHandler(console_handler)
 
-
+api_lock = threading.Lock()
 # ------------------------------------------------------------#
 
+
+import inspect
+import time
+from threading import Lock
+from collections import deque
+import logging
+
+logger = logging.getLogger(__name__)
 
 class UpstoxRateLimiter:
     """
@@ -114,16 +122,32 @@ class UpstoxRateLimiter:
 
     def __init__(self):
         self.lock = Lock()
-        # Deques to store the exact timestamp of every request
         self.sec_history = deque()
         self.min_history = deque()
         self.half_hr_history = deque()
 
     def wait_for_token(self):
+        # --- 🕵️ API DETECTIVE LOGIC ---
+        # stack[0] is wait_for_token()
+        # stack[1] is usually _make_request() inside your UpstoxClient
+        # stack[2] is the specific API method (e.g., is_exchange_holiday)
+        # stack[3] is your local logic (e.g., load_instrument)
+        try:
+            stack = inspect.stack()
+            # Safely grab the function names from the stack trace
+            api_method = stack[2].function if len(stack) > 2 else "Unknown API"
+            origin_func = stack[3].function if len(stack) > 3 else "Unknown Logic"
+            origin_line = stack[3].lineno if len(stack) > 3 else 0
+            
+            leak_info = f"[{api_method}() triggered by {origin_func}() at line {origin_line}]"
+        except Exception:
+            leak_info = "[Unknown Caller]"
+
+        logger.debug(f"Token consumed by: {leak_info}")
+
         with self.lock:
             now = time.time()
 
-            # 1. Clean up old timestamps that have expired
             while self.sec_history and now - self.sec_history[0] > 1.0:
                 self.sec_history.popleft()
             while self.min_history and now - self.min_history[0] > 60.0:
@@ -131,34 +155,31 @@ class UpstoxRateLimiter:
             while self.half_hr_history and now - self.half_hr_history[0] > 1800.0:
                 self.half_hr_history.popleft()
 
-            # 2. Check 1-Second Limit (Buffer at 45 instead of 50 for safety)
+            # 2. Check 1-Second Limit (Buffer at 45)
             if len(self.sec_history) >= 45:
                 sleep_time = 1.0 - (now - self.sec_history[0])
                 if sleep_time > 0:
                     time.sleep(sleep_time)
-                    now = time.time()  # Update 'now' after sleeping!
+                    now = time.time()
 
-            # 3. Check 1-Minute Limit (Buffer at 480 instead of 500)
             if len(self.min_history) >= 480:
                 sleep_time = 60.0 - (now - self.min_history[0])
                 logger.warning(
-                    f"Minute Rate Limit Approaching. Thread pausing for {sleep_time:.2f}s"
+                    f"Minute Rate Limit Approaching. Thread pausing for {sleep_time:.2f}s. Culprit -> {leak_info}"
                 )
                 if sleep_time > 0:
                     time.sleep(sleep_time)
                     now = time.time()
 
-            # 4. Check 30-Minute Limit (Buffer at 1950)
             if len(self.half_hr_history) >= 1950:
                 sleep_time = 1800.0 - (now - self.half_hr_history[0])
                 logger.warning(
-                    f"30-Minute Rate Limit Approaching. Pausing for {sleep_time:.2f}s"
+                    f"30-Minute Rate Limit Approaching. Pausing for {sleep_time:.2f}s. Culprit -> {leak_info}"
                 )
                 if sleep_time > 0:
                     time.sleep(sleep_time)
                     now = time.time()
 
-            # 5. Log the new request timestamp into all buckets
             self.sec_history.append(now)
             self.min_history.append(now)
             self.half_hr_history.append(now)
@@ -466,65 +487,66 @@ class UpstoxClient:
         Returns historical candle data for specified intrument for given time interval. Structure of response = {"instrument_key" : "...", "candles" : {[...]}}
         """
         valid = {"historical", "intraday"}
-        if dtype in valid:
-            if dtype == "historical":
-                if is_expired:
-                    if expiry_date is None:
-                        expiry_date = set(
-                            self.get_options_with_expiry(
-                                options=instrument_key, is_expired=True
-                            )[::-1]
-                        )
-                        for date in expiry_date:
-                            expired_key = self.get_expired_instruments(
-                                instrument_key=instrument_key, expiry_date=date
+        with api_lock:
+            if dtype in valid:
+                if dtype == "historical":
+                    if is_expired and not 'INDEX' in instrument_key:
+                        if expiry_date is None:
+                            expiry_date = set(
+                                self.get_options_with_expiry(
+                                    options=instrument_key, is_expired=True
+                                )[::-1]
                             )
-                            if expired_key is not None:
-                                break
+                            for date in expiry_date:
+                                expired_key = self.get_expired_instruments(
+                                    instrument_key=instrument_key, expiry_date=date
+                                )
+                                if expired_key is not None:
+                                    break
+                        else:
+                            if expired_key is None:
+                                expired_key = self.get_expired_instruments(
+                                    instrument_key=instrument_key, expiry_date=expiry_date
+                                )
+
+                        url = f"https://api.upstox.com/v2/expired-instruments/historical-candle/{expired_key}/1minute/{to_date}/{from_date}"
                     else:
-                        if expired_key is None:
-                            expired_key = self.get_expired_instruments(
-                                instrument_key=instrument_key, expiry_date=expiry_date
-                            )
-
-                    url = f"https://api.upstox.com/v2/expired-instruments/historical-candle/{expired_key}/1minute/{to_date}/{from_date}"
-                else:
-                    url = f"https://api.upstox.com/v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}"
-            elif dtype == "intraday":
-                url = f"https://api.upstox.com/v3/historical-candle/intraday/{instrument_key}/{unit}/{interval}"
-            logger.debug(
-                f"Making request to get historical data for {instrument_key} from {from_date} to {to_date}."
-            )
-            response = self._make_request(method="GET", url=url)
-
-            if response:
-                data = response["data"]
-                data["candles"].reverse()
-                df = pd.DataFrame(
-                    data["candles"],
-                    columns=["timestamp", "open", "high", "low", "close", "vol", "oi"],
+                        url = f"https://api.upstox.com/v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}"
+                elif dtype == "intraday":
+                    url = f"https://api.upstox.com/v3/historical-candle/intraday/{instrument_key}/{unit}/{interval}"
+                logger.debug(
+                    f"Making request to get historical data for {instrument_key} from {from_date} to {to_date}."
                 )
-                df = df if df is not None else None
-                if df.empty:
+                response = self._make_request(method="GET", url=url)
+
+                if response:
+                    data = response["data"]
+                    data["candles"].reverse()
+                    df = pd.DataFrame(
+                        data["candles"],
+                        columns=["timestamp", "open", "high", "low", "close", "vol", "oi"],
+                    )
+                    df = df if df is not None else None
+                    if df.empty:
+                        logger.warning(
+                            f"Empty Dataframe recieved for key : {instrument_key} | from_date : {from_date} | to_date : {to_date} ",
+                            stack_info=True,
+                        )
+                    return df
+                else:
+                    error_msg = (
+                        response if response is not None else "API Request Failed/Timeout"
+                    )
+
+                    logger.warning(error_msg)
                     logger.warning(
-                        f"Empty Dataframe recieved for key : {instrument_key} | from_date : {from_date} | to_date : {to_date} ",
+                        f"Empty Dataframe returned for key : {instrument_key} | from_date : {from_date} | to_date : {to_date} ",
                         stack_info=True,
                     )
-                return df
+                    return None
             else:
-                error_msg = (
-                    response if response is not None else "API Request Failed/Timeout"
-                )
-
-                logger.warning(error_msg)
-                logger.warning(
-                    f"Empty Dataframe returned for key : {instrument_key} | from_date : {from_date} | to_date : {to_date} ",
-                    stack_info=True,
-                )
-                return None
-        else:
-            logger.warning(f"Invalid Value for 'dtype' {dtype}")
-            raise TypeError(f"Possible values for 'dtype' : {valid}")
+                logger.warning(f"Invalid Value for 'dtype' {dtype}")
+                raise TypeError(f"Possible values for 'dtype' : {valid}")
 
 
 
@@ -834,7 +856,7 @@ class UpstoxClient:
                     while True:
                         logger.info(f"Starting portfolio updater")
                         message = await websocket.recv()
-                        data = json.loads(message)
+                        data = json.loads(message)  
                         logger.info(f"Received portfolio update: {data}")
                         await output.put(data)
             except Exception as e:
@@ -1099,7 +1121,7 @@ class UpstoxClient:
                 stack_info=True,
             )
 
-    def is_exchange_holiday(self, date: datetime,exchange:Literal["NSE","BSE"]="NSE") -> bool:
+    def is_exchange_holiday(self, date: datetime, exchange: Literal["NSE", "BSE"] = "NSE") -> bool:
 
         if date.weekday() >= 5:
             return True
@@ -1113,31 +1135,42 @@ class UpstoxClient:
             if path.exists():
                 with open(path, "r") as file:
                     raw_data = json.load(file)
-
+                
                 _HOLIDAY_CACHE[year] = {
                     item["date"]: str(item.get("closed_exchanges", ""))
                     for item in raw_data
                 }
             else:
-                _HOLIDAY_CACHE[year] = None
+                logger.info(f"Holiday file for {year} not found. Fetching full list from Upstox...")
+                try:
+                    all_holidays = self.get_holidays() 
+                    year_data = [h for h in all_holidays if h.get("date", "").startswith(str(year))]
+                    
+                    if year_data:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(path, "w") as file:
+                            json.dump(year_data, file, indent=4)
+                            
+                        _HOLIDAY_CACHE[year] = {
+                            item["date"]: str(item.get("closed_exchanges", ""))
+                            for item in year_data
+                        }
+                        logger.info(f"Successfully cached {len(year_data)} holidays for {year}.")
+                    else:
+                        # Safely handle Upstox returning no data for this year
+                        logger.warning(f"Upstox returned no holidays for {year}.")
+                        _HOLIDAY_CACHE[year] = {} 
+                        
+                except Exception as e:
+                    logger.exception(f"Failed to auto-download holiday list for {year}: {e}")
+                    _HOLIDAY_CACHE[year] = {} 
 
         year_holidays = _HOLIDAY_CACHE[year]
-
-        if year_holidays is not None:
-            if date_str in year_holidays and exchange in year_holidays[date_str]:
-                return True
-            return False
-
-        else:
-            holiday = self.get_holidays(date_str)
-            try:
-                cond = any(item["date"] == date_str for item in holiday)
-                return cond
-            except Exception:
-                logger.exception(
-                    f"Failed to check whether the date `{date_str}` is a holiday."
-                )
-                return None
+        
+        if date_str in year_holidays and exchange in year_holidays[date_str]:
+            return True
+            
+        return False
 
     def get_sandbox_access_token(self):
 

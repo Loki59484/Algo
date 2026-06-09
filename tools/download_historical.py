@@ -27,8 +27,9 @@ ustox = UpstoxClient()
 
 
 def historical(key, from_date, to_date, isexpired=False, expiry=None):
-    if isexpired and expiry is None:
-        raise ValueError("Must provide the expiry date for an expired instrument")
+    if isexpired and expiry is None and not 'INDEX' in key:
+        raise ValueError(f"Must provide the expiry date for expired instrument {key}")
+    
     if isexpired:
         history = ustox.get_historical(
             dtype="historical",
@@ -59,17 +60,18 @@ def download_cache(
     option_key: str,
     expiry: str,
     is_expired: bool,
-    date: dt.datetime,
+    from_date: dt.datetime,
+    to_date: dt.datetime,
     out_path: Path = None,
 ):
     history = historical(
-        option_key, isexpired=is_expired, from_date=date, to_date=date, expiry=expiry
+        option_key, isexpired=is_expired, from_date=from_date, to_date=to_date, expiry=expiry
     )
     if history is None or history.empty:
         raise Exception("Failed to save cache!")
     if out_path:
         history.to_parquet(out_path, engine="pyarrow", compression="snappy")
-        logger.info(f"Cache create for {option_key}")
+        logger.info(f"Cache created for {option_key}")
     return history
 
 

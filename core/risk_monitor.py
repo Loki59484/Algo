@@ -20,6 +20,8 @@ today =  dt.today().strftime('%Y-%m-%d')
 DAY_TARGET = plan.loc[plan['Date'] == today]['Profit'].item()  # Your profit target in INR
 SURPLUS = 5000        # Additional amount to cover charges
 TARGET_THRESHOLD = DAY_TARGET + SURPLUS
+logger.info(f"Trading will stop at ₹{TARGET_THRESHOLD}")
+
 
 async def monitor_orders():
     ustox = UpstoxClient()
@@ -32,11 +34,12 @@ async def monitor_orders():
     try:
         while True:
             # 2. Wait for the next update to arrive in the queue
+            logger.info("Awaiting update")
             update = await data_queue.get()
             
             # Check if the event is a completed order (position closed/opened)
-            if getattr(update, 'status', '').lower() == 'complete':
-                logger.info(f"Order filled for {update.trading_symbol}. Checking Daily PnL...")
+            if update['status'] == 'complete':
+                logger.info(f"Order filled for {update['trading_symbol']}. Checking Daily PnL...")
                 
                 # Fetch your current total realized MTM (Profit/Loss)
                 # Ensure get_funds() is actually an async method returning your PnL
@@ -55,6 +58,8 @@ async def monitor_orders():
                     
                     # Sleep for 12 hours to prevent rapid re-triggering today
                     await asyncio.sleep(60 * 60 * 12) 
+            else: 
+                logger.info(f"Order was not filled for {update['trading_symbol']} | status : {update['status']} ")
 
     except asyncio.CancelledError:
         logger.info("Monitor shutting down.")

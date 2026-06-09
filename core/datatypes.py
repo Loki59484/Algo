@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 from datetime import datetime, timedelta
+from dateutil import relativedelta
 from collections import deque
 import concurrent.futures
 from pathlib import Path
@@ -337,12 +338,12 @@ class Instrument:
         self.type: str | None = None
         self.strike_price: float = 0.0
         self.date = pd.to_datetime(date).date() if date else None
-        self.historical_candles: deque[Candle] = deque(maxlen=800)
+        self.historical_candles: deque[Candle] = deque(maxlen=100000)
         self.expiry = pd.to_datetime(expiry).date() if expiry else None
         self.exchange:Literal["NSE","BSE"]="NSE"
 
     @classmethod
-    def load_previous(cls, client, ins: Instrument, prev_trading_day: datetime,isexpired:bool=True):
+    def load_previous(cls, client, ins: Instrument, from_date: datetime,to_date:datetime,isexpired:bool=True):
         from core.upstox_methods import DATA_DIR
         from core.anatomy import load_parquet
         from tools.download_historical import download_cache
@@ -350,51 +351,53 @@ class Instrument:
         CACHE_DIR = DATA_DIR / "cache"
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-        target_dir: Path = (
+        target_file: Path = (
             DATA_DIR
             / "historical"
             / ins.exchange
-            / prev_trading_day.strftime("%Y")
-            / prev_trading_day.strftime("%m")
-            / prev_trading_day.strftime("%d")
+            / from_date.strftime("%Y")
+            / from_date.strftime("%m")
+            / from_date.strftime("%d")
             / f"{ins.interval}_{ins.unit}"
             / f"{ins.key}.parquet"
         )
 
-        CACHE_FILE = CACHE_DIR / f"{ins.key}.parquet"
+        CACHE_FILE = CACHE_DIR / f"{ins.key}_{from_date}_{to_date}.parquet"
         data = None
 
-        if target_dir.exists():
+        if target_file.exists():
 
-            data = load_parquet(target_dir).get("data", pd.DataFrame())
+            data = load_parquet(target_file).get("data", pd.DataFrame())
             logger.info(
-                f"Data loaded for {ins.key} | Date {prev_trading_day} from file."
+                f"Data loaded for {ins.key} | Date {from_date} - {to_date} from file."
             )
 
-        elif CACHE_FILE.exists():
+        elif CACHE_FILE.exists() and CACHE_FILE.stat().st_size > 0:
 
             data = pd.read_parquet(CACHE_FILE)
             logger.info(
-                f"Data loaded for {ins.key} | Date {prev_trading_day} from cache."
+                f"Data loaded for {ins.key} | Date {from_date} - {to_date} from cache."
             )
         else:
             if not isexpired:
                 logger.info("Loading historical data from Upstox.")
                 data = client.get_historical(instrument_key=ins.key,
-                    from_date=prev_trading_day, to_date=prev_trading_day
+                    from_date=from_date, to_date=to_date
                 )
             else:
-                logger.info("Saving cache for expired instrument from Upstox.")
+                logger.info(f"Saving cache for expired instrument from Upstox at {CACHE_FILE}.")
+
                 data = download_cache(
                     ins.key,
                     is_expired=True,
                     expiry=ins.expiry,
-                    date=prev_trading_day,
+                    from_date=from_date,
+                    to_date=to_date,
                     out_path=CACHE_FILE,
                 )
         if data is None or data.empty:
             logger.error(
-                f"Could not load previous trading date data | Key : {ins.key} | Date = {prev_trading_day}"
+                f"Could not load previous trading date data | Key : {ins.key} | Date = {from_date}"
             )
             return
         else:
@@ -433,20 +436,39 @@ class Instrument:
                 ins.strike_price = getattr(option,"strike_price")
                 ins.date = getattr(option, "date", datetime.today().date())
                 ins.exchange = getattr(option,"exchange")
-                if ins.date == datetime.today().date():
-                    data = client.get_historical(dtype='intraday',instrument_key=ins.key,
-                    from_date=ins.date, to_date=ins.date
-                    )
-                    data_dfs.append(data)
-                current_day = ins.date - timedelta(days=1)
+                #if ins.date == datetime.today().date():
+                #    data = client.get_historical(dtype='intraday',instrument_key=ins.key, from_date=ins.date, to_date=ins.date)
+                #    data_dfs.append(data)
+                #current_day = ins.date - timedelta(days=1)
+                end_date = current_day 
+
                 while lookback > 0:
-                    if client.is_exchange_holiday(current_day,ins.exchange):
-                        logger.info(f"Skipping holiday/weekend : {current_day}")
+                    if client.is_exchange_holiday(current_day, ins.exchange):
+                        #logger.info(f"Skipping holiday/weekend : {current_day}")
                         current_day -= timedelta(days=1)
                     else:
-                        data_dfs.append(cls.load_previous(client, ins, current_day,isexpired=False))
                         lookback -= 1
                         current_day -= timedelta(days=1)
+
+                chunk_start = current_day 
+
+                while chunk_start <= end_date:
+                    chunk_end = min(chunk_start + relativedelta(months=1) - timedelta(days=1), end_date)
+                    
+                    logger.info(f"Fetching historical chunk: {chunk_start} to {chunk_end}")
+                    
+                    # Fetch the chunk
+                    chunk_data = cls.load_previous(
+                        client, 
+                        ins, 
+                        from_date=chunk_start, 
+                        to_date=chunk_end, 
+                        isexpired=True
+                    )
+                    
+                    data_dfs.append(chunk_data)  
+                    # Shift the start date for the next loop iteration
+                    chunk_start = chunk_end + timedelta(days=1)
 
                 data_dfs.reverse()
                 if not data_dfs:
@@ -512,7 +534,7 @@ class Instrument:
         in_ram = isinstance(source[0], dict)
 
         with concurrent.futures.ThreadPoolExecutor(
-            max_workers=os.cpu_count()
+            max_workers=1#os.cpu_count()
         ) as executor:
             if in_ram:
                 futures = [
@@ -555,9 +577,8 @@ class Instrument:
         """
         from core.upstox_methods import DATA_DIR, UpstoxClient
         from core.anatomy import load_parquet
-        from tools.download_historical import download_cache
-
-        ustox = UpstoxClient()
+        from dateutil.relativedelta import relativedelta
+        from datetime import timedelta
 
         if path is None and data is None:
             raise ValueError(
@@ -579,20 +600,54 @@ class Instrument:
         ins.interval = str(metadata.get("interval", "1"))
         ins.type = str(metadata.get("instrument_type", "Index"))
         ins.exchange=str(metadata.get("exchange","NSE"))
-        prev_trading_day = ins.date - timedelta(1)
-        loaded_days = 0
-        data_dfs = [data]
-        while loaded_days < lookback:
-            if ustox.is_exchange_holiday(prev_trading_day,exchange=ins.exchange):
-                logger.info(f"Skipping holiday/weekend : {prev_trading_day}")
-                prev_trading_day -= timedelta(days=1)
-                continue
-            data_dfs.append(cls.load_previous(client,ins, prev_trading_day))
-            prev_trading_day -= timedelta(1)
-            loaded_days += 1
+        
+# --- NEW BATCH CHUNKING LOGIC ---
+        historical_dfs = []
+        
+        if lookback > 0:
+            end_date = ins.date - timedelta(days=1)
+            start_date = end_date
+            days_found = 0
+            
+            # 1. Walk backwards to find the exact start_date
+            while days_found < lookback:
+                if client.is_exchange_holiday(start_date, exchange=ins.exchange):
+                    #logger.info(f"Skipping holiday/weekend : {start_date}")
+                    pass
+                else:
+                    days_found += 1
+                
+                if days_found < lookback:
+                    start_date -= timedelta(days=1)
 
-        data_dfs.reverse()
+            # 2. Pre-calculate the explicit chunk boundaries to prevent infinite loops
+            date_chunks = []
+            curr_start = start_date
+            while curr_start <= end_date:
+                curr_end = min(curr_start + relativedelta(months=1) - timedelta(days=1), end_date)
+                date_chunks.append((curr_start, curr_end))
+                curr_start = curr_end + timedelta(days=1)
+
+            # 3. Execute the strictly defined chunks
+            for c_start, c_end in date_chunks:
+                logger.info(f"Fetching historical chunk: {c_start} to {c_end}")
+                
+                chunk_data = cls.load_previous(
+                    client, 
+                    ins, 
+                    from_date=c_start, 
+                    to_date=c_end, 
+                    isexpired=True
+                )
+                
+                if chunk_data is not None and not chunk_data.empty:
+                    historical_dfs.append(chunk_data)
+
+        # --------------------------------
+
+        data_dfs = historical_dfs + [data]
         data = pd.concat(data_dfs, ignore_index=True) if len(data_dfs) > 1 else data
+        # --------------------------------
 
         if data is not None and not data.empty:
             clean_data = data.copy()

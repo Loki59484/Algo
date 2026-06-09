@@ -31,7 +31,7 @@ print(
 # DEFINING BUY-SELL PARAMETERS
 
 def generate_prob_matrix(client:UpstoxClient,instrument:Instrument,lookback, force_rebuild=False):
-    back_data = Instrument.load_previous(client=client,ins=instrument,prev_trading_day=instrument.date-timedelta(days=lookback), isexpired=True)
+    back_data = Instrument.load_previous(client=client,ins=instrument,from_date=instrument.date-timedelta(days=lookback), isexpired=True)
     return back_data
 
 
@@ -426,7 +426,6 @@ args = setup_cli()
 INSTRUMENT_CACHE = DATA_DIR / "cache" / f"{args.bulk[0]}_instruments_cache.joblib"
 files = list((DATA_DIR / "historical" / args.bulk[0]).rglob("*.parquet"))
 # files = [file for file in files if "INDEX" not in str(file)]
-
 files.sort()
 
 if INSTRUMENT_CACHE.exists() and not args.no_cache:
@@ -434,7 +433,7 @@ if INSTRUMENT_CACHE.exists() and not args.no_cache:
     insts = joblib.load(INSTRUMENT_CACHE)
     print(f"Loaded {len(insts)} instruments from cache.", end="\r")
 else:
-    insts = Instrument.load_multiple(client=None, source=files, lookback=0)
+    insts = Instrument.load_multiple(client=ustox, source=files, lookback=30)
     joblib.dump(insts, INSTRUMENT_CACHE)
 insts_dict = {(item.key, item.date): item for item in insts}
 trader.add_instrument(insts_dict)
