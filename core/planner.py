@@ -1,6 +1,6 @@
-from dearpygui.dearpygui import *
+from dearpygui import dearpygui as dpg
 from dotenv import set_key
-from upstox_methods import *
+from upstox_methods import UpstoxClient, DATA_DIR, ENV_PATH,ROOT_DIR
 from pprint import pprint
 import traceback
 import datetime as dt
@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 import os
 import argparse
+import logging
 
 # Assuming config and path constants are handled in your environment
 from config import config 
@@ -45,8 +46,8 @@ class Planner:
         return parser.parse_args()
 
     def predict_days(self, net_target, gross_target, y1, a, force=False):
-        def profit(y, n):
-            return round(a * ((1 + a) ** n) * y1)
+        def profit(y,n):
+            return round(a * ((1 + a) ** n) * y)
 
         checkpoint_path = DATA_DIR / "target_checkpoints.json"
         
@@ -56,13 +57,13 @@ class Planner:
                 n = 0
                 
                 # Removed the Status array from initialization
-                pltdata = dict(Days=[], Date=[], Profit=[], Remainder=[])
+                pltdata = {'Days':[], 'Date':[], 'Profit':[], 'Remainder':[]}
                 
                 # 1. BUILD THE ROADMAP USING GROSS TARGET
                 x_nplus1 = round(gross_target)
                 
                 while x_nplus1 > 0:
-                    prof = profit(y1, n)
+                    prof = profit(y1,n)
                     x_nplus1 -= prof # Deduct profit instantly for the end-of-day remainder
                     
                     pltdata["Profit"].append(prof)
@@ -81,6 +82,11 @@ class Planner:
                 
             # Force standard string format to undo Pandas JSON parsing
             df["Date"] = pd.to_datetime(df["Date"]).dt.strftime("%Y-%m-%d")
+            
+            # ---------------------------------------------------------
+            # NEW: CALCULATE CUMULATIVE PROFIT
+            # ---------------------------------------------------------
+            df["Cumulative_Profit"] = df["Profit"].cumsum()
             
             # 2. EVALUATE YOUR STATUS USING NET TARGET
             df["Status"] = np.where(df["Remainder"] >= net_target, 1, 0)
@@ -134,10 +140,11 @@ class Planner:
             
             # Print cleanly without index numbers and without truncating to 10 rows
             if __name__ == '__main__':
-                print(df[["Days", "Date", "Profit", "Remainder", "Status"]].to_markdown(index=False))
+                # UPDATED: Included Cumulative_Profit in the markdown output
+                print(df[["Days", "Date", "Profit", "Cumulative_Profit", "Remainder", "Status"]].to_markdown(index=False))
             return df
             
-        except Exception as e:
+        except Exception:
             traceback.print_exc()
             return pd.DataFrame()
 
@@ -168,7 +175,6 @@ class Planner:
             logger.info("Fetching lifetime history from Upstox API...")
             gross_target = self.groww_pnl
             
-            from_date = dt.datetime(2025, 4, 1).date()
             report = []
             charges = 0
             
@@ -218,7 +224,7 @@ class Planner:
         elif self.surplus < 0:
             surplus_text = f"-₹{abs(self.surplus)} (Behind plan ⚠️)"
         else:
-            surplus_text = f"₹0.0 (Exactly on track)"
+            surplus_text = "₹0.0 (Exactly on track)"
             
         print(f"Performance Surplus    : {surplus_text}")
         print(f"Projected Days Left    : {self.days_remaining} days")
@@ -233,7 +239,7 @@ class Planner:
     def generate_trading_dates(self, num_days, start_date=None):
         holidays_path = ROOT_DIR / "holidays.json"
         
-        if os.path.exists(holidays_path) and not os.path.getsize(holidays_path) == 0:
+        if os.path.exists(holidays_path) and os.path.getsize(holidays_path) != 0:
             holidays = pd.read_json(holidays_path)
         else:
             holidays = pd.DataFrame(self.ustox.get_holidays())
@@ -253,31 +259,31 @@ class Planner:
 
     def report_window(self, show=True):
         def setup():
-            with font_registry():
-                with font(f"{self.ustox.directory}fonts/ProggyClean.ttf", 18) as defaultfont:
-                    add_font_range_hint(mvFontRangeHint_Default)
+            with dpg.font_registry():
+                with dpg.font(f"{self.ustox.directory}fonts/ProggyClean.ttf", 18) as defaultfont:
+                    dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
                     
-            with window(tag="Report", show=show, height=300, width=500):
-                add_text(f"Target : {self.target}")
-                add_text(f"Groww target : {self.groww_pnl}")
-                add_text(f"Upstox target : {self.target - self.groww_pnl}")
-                add_text(f"Status : {max(0, self.previous_target - self.target)}")
-                add_text(f"Day's Target: {self.target_profit}")
-                add_text(f"Projected days: {self.days_remaining} days")
+            with dpg.window(tag="Report", show=show, height=300, width=500):
+                dpg.add_text(f"Target : {self.target}")
+                dpg.add_text(f"Groww target : {self.groww_pnl}")
+                dpg.add_text(f"Upstox target : {self.target - self.groww_pnl}")
+                dpg.add_text(f"Status : {max(0, self.previous_target - self.target)}")
+                dpg.add_text(f"Day's Target: {self.target_profit}")
+                dpg.add_text(f"Projected days: {self.days_remaining} days")
                 if self.projected_date:
-                    add_text(f"Projected date: {self.projected_date.date().strftime('%d %B %Y')}")
+                    dpg.add_text(f"Projected date: {self.projected_date.date().strftime('%d %B %Y')}")
                     
-            bind_item_font(item="Report", font=defaultfont)
+            dpg.bind_item_font(item="Report", font=defaultfont)
 
-        create_context()
-        if not is_dearpygui_running():
+        dpg.create_context()
+        if not dpg.is_dearpygui_running():
             try:
-                create_viewport(title="Report", resizable=True, height=300, width=500)
+                dpg.create_viewport(title="Report", resizable=True, height=300, width=500)
                 setup()
-                set_primary_window("Report", True) # Fixed: Mismatched window tag
-                setup_dearpygui()
-                show_viewport()
-                start_dearpygui()
+                dpg.set_primary_window("Report", True) # Fixed: Mismatched window tag
+                dpg.setup_dearpygui()
+                dpg.show_viewport()
+                dpg.start_dearpygui()
             except Exception as e:
                 print(f"An error occurred: {e}")
         else:

@@ -8,11 +8,10 @@ ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from upstox_methods import UpstoxClient  # Replace with your actual import
+from upstox_methods import UpstoxClient, logger  # Replace with your actual import
 from planner import Planner
 
 # Setup Logging
-logger = logging.getLogger(__name__)
 planner = Planner()
 args = planner.setup_cli()
 plan = planner.create(args)
@@ -64,11 +63,11 @@ async def monitor_orders():
     except asyncio.CancelledError:
         logger.info("Monitor shutting down.")
         ws_task.cancel() # Clean up the background task
+        raise
     except Exception as e:
         logger.exception(f"Encountered error: {e}. Reconnecting in 5s...")
         ws_task.cancel() # Clean up before attempting reconnect (if you add a retry loop later)
         await asyncio.sleep(5)
-
 if __name__ == "__main__":
     try:
         asyncio.run(monitor_orders())

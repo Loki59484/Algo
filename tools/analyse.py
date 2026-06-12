@@ -34,19 +34,18 @@ if __name__ == "__main__":
     else:
         file = input("Enter csv file path here: ")
     df = pd.read_csv(file)
-#    df["DM_diff"] = df["Buy_conditions.DMP"] - df["Buy_conditions.DMN"]
-    df["Month"] = to_ist(df["Buy_timestamp"]).dt.strftime("%Y-%m")
+    df["Month"] = to_ist(df["buy_timestamp"]).dt.strftime("%Y-%m")
 
     # Build a comprehensive daily tear sheet
     monthly_analysis_df = (
         df.groupby("Month")
         .agg(
-            Total_PnL=("PnL", "sum"),
-            Gross_Profit=("PnL", lambda x: x[x > 0].sum()),
-            Gross_Loss=("PnL", lambda x: x[x < 0].sum()),
-            Total_Trades=("PnL", "count"),
+            Total_pnl=("pnl", "sum"),
+            Gross_Profit=("pnl", lambda x: x[x > 0].sum()),
+            Gross_Loss=("pnl", lambda x: x[x < 0].sum()),
+            Total_Trades=("pnl", "count"),
             Win_Rate=(
-                "PnL",
+                "pnl",
                 lambda x: (x > 0).mean() * 100,
             ),  # Returns % of winning trades
         )
@@ -56,13 +55,13 @@ if __name__ == "__main__":
 
     # Round the financials for a clean look
     monthly_analysis_df = monthly_analysis_df.round(2)
-    profit_df = df[df["PnL"] > 0].reset_index(drop=True)
-    total_profit = profit_df["PnL"].sum().round()
-    loss_df = df[df["PnL"] < 0].reset_index(drop=True)
-    total_loss = loss_df["PnL"].sum().round()
+    profit_df = df[df["pnl"] > 0].reset_index(drop=True)
+    total_profit = profit_df["pnl"].sum().round()
+    loss_df = df[df["pnl"] < 0].reset_index(drop=True)
+    total_loss = loss_df["pnl"].sum().round()
     pd.set_option("display.max_rows", None)
-    winning_trades = profit_df["PnL"]
-    losing_trades = loss_df["PnL"]
+    winning_trades = profit_df["pnl"]
+    losing_trades = loss_df["pnl"]
 
     avg_win = winning_trades.mean() if not winning_trades.empty else 0
     avg_loss = abs(losing_trades.mean()) if not losing_trades.empty else 1
@@ -76,8 +75,8 @@ if __name__ == "__main__":
     print(f"Average Win: ₹{avg_win:.2f}")
     print(f"Average Loss: ₹{avg_loss:.2f}")
     print(f"True System R:R: 1 : {system_rr:.2f}")
-    print("Losing Calls", len(loss_df[(loss_df["Side"] == "CE")]))
-    print("Losing Puts", len(loss_df[(loss_df["Side"] == "PE")]))
-    print("Winning Puts", len(profit_df[(profit_df["Side"] == "PE")]))
-    print("Winning Calls", len(profit_df[(profit_df["Side"] == "CE")]))
+    print("Losing Calls", len(loss_df[(loss_df["side"] == "CE")]))
+    print("Losing Puts", len(loss_df[(loss_df["side"] == "PE")]))
+    print("Winning Puts", len(profit_df[(profit_df["side"] == "PE")]))
+    print("Winning Calls", len(profit_df[(profit_df["side"] == "CE")]))
     

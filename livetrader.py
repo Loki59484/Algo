@@ -17,9 +17,10 @@ if str(ROOT_DIR) not in sys.path:
 
 # IMPORTING CUSTOM MODULES
 from core import anatomy as ana
-from core.datatypes import *
-from core.upstox_methods import *
 from core.methods import setup_cli
+from core.datatypes import Instrument, Trade, Portfolio, Bucket, Funds
+from core.upstox_methods import UpstoxClient, DATA_DIR
+
 from ui import tui
 
 INSTRUMENT_CACHE = DATA_DIR / "cache" / "instruments_cache.joblib"
@@ -112,7 +113,7 @@ async def executor(
             if stoploss_hit or target_hit or sell_cons:
                 status = trader.broker.sell_order(
                     key=option.key,
-                    qty=trader.portfolio.report[-1].Buy_qty,
+                    qty=trader.portfolio.report[-1].buy_qty,
                     price=(
                         stoploss
                         if stoploss_hit
@@ -124,14 +125,14 @@ async def executor(
                     return
 
                 report: Trade = trader.portfolio.report[-1]
-                report.Sell_conditions = row._asdict()
-                report.Sell_qty = report.Buy_qty
-                report.Sell_timestamp = row.Index
-                report.Sell_price = stoploss if stoploss_hit else row.close
-                report.Remark = "SL" if stoploss_hit else "T" if target_hit else "-"
-                report.Movement = report.Sell_price - report.Buy_price
-                report.PnL = (report.Sell_price * report.Sell_qty) - (
-                    report.Buy_price * report.Buy_qty
+                report.sell_conditions = row._asdict()
+                report.sell_qty = report.buy_qty
+                report.sell_timestamp = row.Index
+                report.sell_price = stoploss if stoploss_hit else row.close
+                report.remark = "SL" if stoploss_hit else "T" if target_hit else "-"
+                report.movement = report.sell_price - report.buy_price
+                report.pnl = (report.sell_price * report.sell_qty) - (
+                    report.buy_price * report.buy_qty
                 )
                 report.total = trader.portfolio.funds.total
                 bucket.open_position = None
@@ -174,13 +175,13 @@ async def executor(
             bucket.open_position.stoploss = None
             trader.portfolio.report.append(
                 Trade(
-                    Trade_id=ord_id,
-                    Instrument_key=option.key,
-                    Buy_timestamp=row.Index,
-                    Side=option.type,
-                    Buy_price=row.close,
-                    Buy_qty=qty,
-                    Buy_conditions=row._asdict(),
+                    trade_id=ord_id,
+                    instrument_key=option.key,
+                    buy_timestamp=row.Index,
+                    side=option.type,
+                    buy_price=row.close,
+                    buy_qty=qty,
+                    buy_conditions=row._asdict(),
                 )
             )
 

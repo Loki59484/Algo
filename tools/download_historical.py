@@ -16,8 +16,8 @@ HIST_DATA_DIR = ROOT_DIR / "data" / "historical"
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from core.upstox_methods import *
-from core.anatomy import save_parquet
+from core.upstox_methods import UpstoxClient, DATA_DIR, CONFIG_DIR
+from core.methods import save_parquet
 from core.datatypes import to_ist
 
 # Intitiating logger
@@ -25,24 +25,16 @@ logger = logging.getLogger(__name__)
 ustox = UpstoxClient()
 
 
-
 def historical(key, from_date, to_date, isexpired=False, expiry=None):
-    if isexpired and expiry is None and not 'INDEX' in key:
+    if isexpired and expiry is None and "INDEX" not in key:
         raise ValueError(f"Must provide the expiry date for expired instrument {key}")
-    
+
     if isexpired:
-        history = ustox.get_historical(
-            dtype="historical",
-            expired_key=key,
-            to_date=to_date,
-            from_date=from_date,
-            is_expired=True,
-            expiry_date=expiry,
-        )
+        history = ustox.get_historical(dtype="historical",instrument_key=key,to_date=to_date,from_date=from_date,is_expired=True,expiry_date=expiry)
+
     else:
-        history = ustox.get_historical(
-            dtype="intraday", instrument_key=key, from_date=from_date, to_date=to_date
-        )
+
+        history = ustox.get_historical(dtype="intraday", instrument_key=key, from_date=from_date, to_date=to_date)
         history = (
             history
             if not history.empty
@@ -53,6 +45,7 @@ def historical(key, from_date, to_date, isexpired=False, expiry=None):
                 to_date=to_date,
             )
         )
+
     return history
 
 
@@ -64,20 +57,14 @@ def download_cache(
     to_date: dt.datetime,
     out_path: Path = None,
 ):
-    history = historical(
-        option_key, isexpired=is_expired, from_date=from_date, to_date=to_date, expiry=expiry
-    )
-    if history is None or history.empty:
-        raise Exception("Failed to save cache!")
-    if out_path:
+    history = historical(option_key,isexpired=is_expired,from_date=from_date,to_date=to_date,expiry=expiry)
+    if out_path and not history.empty:
         history.to_parquet(out_path, engine="pyarrow", compression="snappy")
         logger.info(f"Cache created for {option_key}")
     return history
 
 
-def save_datewise(
-    data: pd.DataFrame, target_dir: Path, makedirs: bool = True, **metadata
-):
+def save_datewise(data: pd.DataFrame, target_dir: Path, **metadata):
     data["date"] = to_ist(data["timestamp"]).dt.date
     grouped = data.groupby("date")
     for date, group in grouped:
@@ -104,8 +91,7 @@ def download_data(spot, is_expired=False, interval=1, unit="minutes", force=Fals
         set(ustox.get_options_with_expiry(options=spot, is_expired=is_expired))
     )
     if (
-        os.path.exists(EXPIRED_KEYS_FILE)
-        and not os.path.getsize(EXPIRED_KEYS_FILE) == 0
+        os.path.exists(EXPIRED_KEYS_FILE) and os.path.getsize(EXPIRED_KEYS_FILE) != 0
     ) and not force:
         instruments = pd.read_parquet(EXPIRED_KEYS_FILE)
     else:
@@ -127,13 +113,18 @@ def download_data(spot, is_expired=False, interval=1, unit="minutes", force=Fals
             (holidays["date"] == exp)
             & (holidays["closed_exchanges"].str.contains(spot[:3], na=False))
         ).any():
-            underlying = ustox.get_historical(instrument_key=spot,
-                from_date=exp_dt - dt.timedelta(days=7), to_date=exp_dt
+            underlying = ustox.get_historical(
+                instrument_key=spot,
+                from_date=exp_dt - dt.timedelta(days=7),
+                to_date=exp_dt,
             )
-            step = 100 if "BSE" in spot or "NSE" in spot else 100
+            if "NSE" in spot[:3]:
+                step = 50
+            else:
+                step = 100
             offset = 600
-            spot_price = round(underlying.open.iloc[0]/ step) * step
-            
+            spot_price = round(underlying.open.iloc[0] / step) * step
+
             call_keys = instruments[
                 (instruments["instrument_type"] == "CE")
                 & (instruments["expiry"] == exp)
@@ -141,7 +132,7 @@ def download_data(spot, is_expired=False, interval=1, unit="minutes", force=Fals
             if call_keys.empty:
                 continue
             call_keys = call_keys.set_index("strike_price")
-            call = call_keys.loc[spot_price-offset]
+            call = call_keys.loc[spot_price - offset]
 
             put_keys = instruments[
                 (instruments["instrument_type"] == "PE")
@@ -150,8 +141,7 @@ def download_data(spot, is_expired=False, interval=1, unit="minutes", force=Fals
             if put_keys.empty:
                 continue
             put_keys = put_keys.set_index("strike_price")
-            put = put_keys.loc[spot_price+offset]
-
+            put = put_keys.loc[spot_price + offset]
             call_data = historical(
                 key=call["instrument_key"],
                 expiry=exp,
@@ -166,6 +156,9 @@ def download_data(spot, is_expired=False, interval=1, unit="minutes", force=Fals
                 from_date=exp_dt - dt.timedelta(days=7),
                 to_date=exp_dt,
             )
+            if not all((call_data is not None,put_data is not None, underlying is not None)):
+                continue
+
             if call_data.empty or put_data.empty or underlying.empty:
                 continue
             HIST_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -212,7 +205,7 @@ months  | 1           | Jan 2000       | No limit
         type=str,
         help="Download underlying data | Requires the instrument key for the underlying instrument",
     )
-    parser.add_argument(    
+    parser.add_argument(
         "-i",
         "--interval",
         default=1,
@@ -246,5 +239,9 @@ months  | 1           | Jan 2000       | No limit
     is_expired = True if args.expired else False
     # Download data
     download_data(
-        args.spot, is_expired=is_expired, interval=args.interval, unit=args.unit, force=args.force
+        args.spot,
+        is_expired=is_expired,
+        interval=args.interval,
+        unit=args.unit,
+        force=args.force,
     )

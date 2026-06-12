@@ -31,7 +31,6 @@ def generate_cache_key(date_str, params):
 
 def filter_options(options: pd.DataFrame):
     """Filter options based on strike price and option type."""
-    spot = options.iloc[0]["underlying_spot_price"]
     calls = [
         (
             option["instrument_key"],
@@ -97,10 +96,11 @@ def load_parquet(path: Path):
             key.decode("utf-8"): value.decode("utf-8")
             for key, value in (table.schema.metadata or {}).items()
         }
-        return dict(data=df, metadata=metadata)
+        
+        return {'data':df, 'metadata':metadata}
     except Exception as e:
         logger.exception(f"Error loading parquet file from {path}: {e}")
-        return dict(data=None, metadata=None)
+        return {'data':None, 'metadata':None}
 
 
 def to_ist(target: pd.Series | list | int | float, unit="ms"):
@@ -142,12 +142,12 @@ def generate_tear_sheet(report_df: pd.DataFrame, starting_capital: float = 30000
     df["Timestamp"] = pd.to_datetime(df["Timestamp"])
     df.set_index("Timestamp", inplace=True)
 
-    # 2. Group the PnL by Day (Resample to 'D')
-    # If you made 5 trades on Monday, this sums them into one daily PnL number.
-    daily_pnl = df["PnL"].resample("D").sum().fillna(0)
+    # 2. Group the pnl by Day (Resample to 'D')
+    # If you made 5 trades on Monday, this sums them into one daily pnl number.
+    daily_pnl = df["pnl"].resample("D").sum().fillna(0)
 
     # 3. Build the Equity Curve
-    # Add the compounding daily PnL to your starting cash
+    # Add the compounding daily pnl to your starting cash
     equity_curve = starting_capital + daily_pnl.cumsum()
 
     # 4. Calculate Percentage Returns

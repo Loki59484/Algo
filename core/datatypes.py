@@ -1,10 +1,10 @@
 from __future__ import annotations
 from dataclasses import field, fields, asdict
-from typing import Literal
+from typing import Literal, Any
 from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 from datetime import datetime, timedelta
-from dateutil import relativedelta
+from dateutil.relativedelta import relativedelta
 from collections import deque
 import concurrent.futures
 from pathlib import Path
@@ -29,7 +29,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 # IMPORTING CUSTOM MODULES
-from core.methods import to_ist, parse_obj_to_dataclass
+from core.methods import to_ist, load_parquet
 
 
 class DatatypeBase:
@@ -54,26 +54,25 @@ class Funds:
     pnl: float = 0.0
     total: float = 0.0
     used_margin: float = 0.0
-    available_margin: float = 0.0 # always <= starting capital
-    adhoc_margin: float= 0.0
-    available_margin: float= 0.0
-    exposure_margin: float= 0.0
-    notional_cash: float= 0.0
-    payin_amount: float= 0.0
-    span_margin: float= 0.0
+    adhoc_margin: float = 0.0
+    available_margin: float = 0.0
+    exposure_margin: float = 0.0
+    notional_cash: float = 0.0
+    payin_amount: float = 0.0
+    span_margin: float = 0.0
 
     @classmethod
-    def parse_funds_json(cls:Funds,data:dict,new:bool=True) -> Funds|None:
+    def parse_funds_json(cls: Funds, data: dict, new: bool = True) -> Funds | None:
         if new:
-            cls = cls(starting_capital = data['equity']['available_margin'])
+            cls = cls(starting_capital=data["equity"]["available_margin"])
 
-        cls.adhoc_margin: float= data['equity']['adhoc_margin']
-        cls.available_margin: float= data['equity']['available_margin']
-        cls.exposure_margin: float= data['equity']['exposure_margin']
-        cls.notional_cash: float= data['equity']['notional_cash']
-        cls.payin_amount: float= data['equity']['payin_amount']
-        cls.span_margin: float= data['equity']['span_margin']
-        cls.used_margin: float= data['equity']['used_margin']
+        cls.adhoc_margin: float = data["equity"]["adhoc_margin"]
+        cls.available_margin: float = data["equity"]["available_margin"]
+        cls.exposure_margin: float = data["equity"]["exposure_margin"]
+        cls.notional_cash: float = data["equity"]["notional_cash"]
+        cls.payin_amount: float = data["equity"]["payin_amount"]
+        cls.span_margin: float = data["equity"]["span_margin"]
+        cls.used_margin: float = data["equity"]["used_margin"]
         return cls if new else None
 
     def __post_init__(self):
@@ -99,17 +98,19 @@ class Funds:
         self.pnl = self.total - self.starting_capital
         self.used_margin += amount
 
-    def settle(self, simulate:bool=True, client=None):
+    def settle(self, simulate: bool = True, client=None):
         if not simulate and client is None:
-            logger.error("A client instance of `UpstoxClient` class is required if not simulating [simulate=False].")
+            logger.error(
+                "A client instance of `UpstoxClient` class is required if not simulating [simulate=False]."
+            )
         logger.info(
-            f"Day settled with starting :{self.starting_capital} | PnL: {self.pnl} | available: {self.available_margin}"
+            f"Day settled with starting :{self.starting_capital} | pnl: {self.pnl} | available: {self.available_margin}"
         )
         if simulate:
             self.available_margin = self.starting_capital = self.total
             self.pnl = 0
             return
-        self.parse_funds_json(cls=self,data=client.get_funds(),new=False)
+        self.parse_funds_json(cls=self, data=client.get_funds(), new=False)
 
 
 @dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
@@ -150,13 +151,13 @@ class Candle:
     close: float = np.nan
     volume: int = 0
     ltp: float | None = None
-    
+
     # CUSTOM FIELDS
-    buy_signal: bool = None
-    sell_signal: bool = None
+    buy_signal: bool = False
+    sell_signal: bool = False
 
     @classmethod
-    def load_ohlc(cls, ohlc: dict,ltpc: LTPC):
+    def load_ohlc(cls, ohlc: dict, ltpc: LTPC):
         return cls(
             timestamp=to_ist(ohlc.get("ts", "0")),
             open=ohlc.get("open", np.nan),
@@ -164,7 +165,7 @@ class Candle:
             low=ohlc.get("low", np.nan),
             close=ohlc.get("close", np.nan),
             volume=ohlc.get("vol", 0),
-            ltp=getattr(ltpc,'ltp',None)
+            ltp=getattr(ltpc, "ltp", None),
         )
 
 
@@ -175,17 +176,17 @@ class Tick:
     """
 
     key: str = ""
-    timestamp: datetime | None = None 
+    timestamp: datetime | None = None
     ohlc_1d: Candle | None = None
     ohlc_1m: Candle | None = None
     greeks: Greeks | None = None
     ltpc: LTPC | None = None
     depth: list[dict] | None = None
     oi: float = 0
-    market_open : bool | None = False
+    market_open: bool | None = False
 
     @classmethod
-    def parse_tick(cls, key, feed: dict, timestamp: str,market_status:bool):
+    def parse_tick(cls, key, feed: dict, timestamp: str, market_status: bool):
         try:
             logger.debug("Parsing tick")
             market_data = feed.get("marketFF", {})
@@ -209,10 +210,9 @@ class Tick:
             for item in market_ohlc:
                 interval = item.get("interval")
                 if interval == "1d":
-                    ohlc_1d_obj = Candle.load_ohlc(ohlc=item,ltpc=ltpc)
+                    ohlc_1d_obj = Candle.load_ohlc(ohlc=item, ltpc=ltpc)
                 elif interval == "I1":
-                    ohlc_1m_obj = Candle.load_ohlc(ohlc=item,ltpc=ltpc)
-
+                    ohlc_1m_obj = Candle.load_ohlc(ohlc=item, ltpc=ltpc)
 
             return cls(
                 key=key,
@@ -238,7 +238,7 @@ class Order(DatatypeBase):
         Order
     """
 
-    order_id: str = 0
+    order_id: str = "0"
     transaction_type: str | None = None
     order_timestamp: datetime = to_ist(0)
     exchange: str | None = None
@@ -263,7 +263,6 @@ class Order(DatatypeBase):
     exchange_order_id: str | None = None
     parent_order_id: str | None = None
     variety: str | None = None
-    order_timestamp: str | None = None
     exchange_timestamp: str | None = None
     is_amo: bool | None = None
     order_request_id: str | None = None
@@ -340,12 +339,12 @@ class Instrument:
         self.date = pd.to_datetime(date).date() if date else None
         self.historical_candles: deque[Candle] = deque(maxlen=100000)
         self.expiry = pd.to_datetime(expiry).date() if expiry else None
-        self.exchange:Literal["NSE","BSE"]="NSE"
+        self.exchange: Literal["NSE", "BSE"] = "NSE"
 
-    @classmethod
-    def load_previous(cls, client, ins: Instrument, from_date: datetime,to_date:datetime,isexpired:bool=True):
+    def load_previous(
+        self, client, from_date: datetime, to_date: datetime, isexpired: bool = True
+    ):
         from core.upstox_methods import DATA_DIR
-        from core.anatomy import load_parquet
         from tools.download_historical import download_cache
 
         CACHE_DIR = DATA_DIR / "cache"
@@ -354,52 +353,45 @@ class Instrument:
         target_file: Path = (
             DATA_DIR
             / "historical"
-            / ins.exchange
+            / self.exchange
             / from_date.strftime("%Y")
             / from_date.strftime("%m")
             / from_date.strftime("%d")
-            / f"{ins.interval}_{ins.unit}"
-            / f"{ins.key}.parquet"
+            / f"{self.interval}_{self.unit}"
+            / f"{self.key}.parquet"
         )
 
-        CACHE_FILE = CACHE_DIR / f"{ins.key}_{from_date}_{to_date}.parquet"
+        CACHE_FILE = CACHE_DIR / f"{self.key}_{from_date}_{to_date}.parquet"
         data = None
 
         if target_file.exists():
 
             data = load_parquet(target_file).get("data", pd.DataFrame())
             logger.info(
-                f"Data loaded for {ins.key} | Date {from_date} - {to_date} from file."
+                f"Data loaded for {self.key} | Date {from_date} - {to_date} from file."
             )
 
         elif CACHE_FILE.exists() and CACHE_FILE.stat().st_size > 0:
 
             data = pd.read_parquet(CACHE_FILE)
             logger.info(
-                f"Data loaded for {ins.key} | Date {from_date} - {to_date} from cache."
+                f"Data loaded for {self.key} | Date {from_date} - {to_date} from cache."
             )
         else:
             if not isexpired:
                 logger.info("Loading historical data from Upstox.")
-                data = client.get_historical(instrument_key=ins.key,
-                    from_date=from_date, to_date=to_date
+                data = client.get_historical(
+                    instrument_key=self.key, from_date=from_date, to_date=to_date
                 )
             else:
-                logger.info(f"Saving cache for expired instrument from Upstox at {CACHE_FILE}.")
-
-                data = download_cache(
-                    ins.key,
-                    is_expired=True,
-                    expiry=ins.expiry,
-                    from_date=from_date,
-                    to_date=to_date,
-                    out_path=CACHE_FILE,
+                logger.info(
+                    f"Saving cache for expired instrument from Upstox at {CACHE_FILE}."
                 )
+                data = download_cache(self.key,is_expired=True,expiry=self.expiry,from_date=from_date,to_date=to_date,out_path=CACHE_FILE)
         if data is None or data.empty:
-            logger.error(
-                f"Could not load previous trading date data | Key : {ins.key} | Date = {from_date}"
+            logger.warning(
+                f"Could not load previous trading date data | Key : {self.key} | Date = {from_date}"
             )
-            return
         else:
             return data
 
@@ -424,49 +416,50 @@ class Instrument:
 
         parsed_options = []
         try:
-            for option in tqdm(options.itertuples(),desc="Parsing options",leave=False,total=len(options)):
-                data_dfs = []                
+            for option in tqdm(
+                options.itertuples(),
+                desc="Parsing options",
+                leave=False,
+                total=len(options),
+            ):
+                data_dfs = []
                 ins = cls(
                     instrument_key=option.instrument_key,
                     expiry=option.expiry,
                 )
-                ins.lot_size = getattr(option,"lot_size")
-                ins.freeze_qty = getattr(option,"freeze_quantity")
-                ins.type = getattr(option,"instrument_type")
-                ins.strike_price = getattr(option,"strike_price")
+                ins.lot_size = getattr(option, "lot_size")
+                ins.freeze_qty = getattr(option, "freeze_quantity")
+                ins.type = getattr(option, "instrument_type")
+                ins.strike_price = getattr(option, "strike_price")
                 ins.date = getattr(option, "date", datetime.today().date())
-                ins.exchange = getattr(option,"exchange")
-                #if ins.date == datetime.today().date():
-                #    data = client.get_historical(dtype='intraday',instrument_key=ins.key, from_date=ins.date, to_date=ins.date)
-                #    data_dfs.append(data)
-                #current_day = ins.date - timedelta(days=1)
-                end_date = current_day 
+                ins.exchange = getattr(option, "exchange")
+                end_date = current_day
 
                 while lookback > 0:
                     if client.is_exchange_holiday(current_day, ins.exchange):
-                        #logger.info(f"Skipping holiday/weekend : {current_day}")
                         current_day -= timedelta(days=1)
                     else:
                         lookback -= 1
                         current_day -= timedelta(days=1)
 
-                chunk_start = current_day 
+                chunk_start = current_day
 
                 while chunk_start <= end_date:
-                    chunk_end = min(chunk_start + relativedelta(months=1) - timedelta(days=1), end_date)
-                    
-                    logger.info(f"Fetching historical chunk: {chunk_start} to {chunk_end}")
-                    
-                    # Fetch the chunk
-                    chunk_data = cls.load_previous(
-                        client, 
-                        ins, 
-                        from_date=chunk_start, 
-                        to_date=chunk_end, 
-                        isexpired=True
+                    chunk_end = min(
+                        chunk_start + relativedelta(months=1) - timedelta(days=1),
+                        end_date,
                     )
-                    
-                    data_dfs.append(chunk_data)  
+
+                    logger.info(
+                        f"Fetching historical chunk: {chunk_start} to {chunk_end}"
+                    )
+
+                    # Fetch the chunk
+                    chunk_data = ins.load_previous(
+                        client, from_date=chunk_start, to_date=chunk_end, isexpired=True
+                    )
+
+                    data_dfs.append(chunk_data)
                     # Shift the start date for the next loop iteration
                     chunk_start = chunk_end + timedelta(days=1)
 
@@ -504,7 +497,13 @@ class Instrument:
         return parsed_options
 
     @classmethod
-    def load_multiple(cls,client,source: list[Path] | list[dict], lookback: list | int = 0):
+    def load_multiple(
+        cls,
+        client,
+        source: list[Path] | list[dict],
+        lookback: list | int = 0,
+        load_history: bool = False,
+    ):
         """Loads multiple instruments at once using `concurrent.futures.ProcessPoolExecutor`.
 
         Args:
@@ -534,16 +533,26 @@ class Instrument:
         in_ram = isinstance(source[0], dict)
 
         with concurrent.futures.ThreadPoolExecutor(
-            max_workers=1#os.cpu_count()
+            max_workers=1  # os.cpu_count()
         ) as executor:
             if in_ram:
                 futures = [
-                    executor.submit(cls.load_instrument,client=client, **src, lookback=lb)
+                    executor.submit(
+                        cls.load_instrument(
+                            client=client, **src, lookback=lb, load_history=load_history
+                        )
+                    )
                     for src, lb in zip(source, lookbacks)
                 ]
             else:
                 futures = [
-                    executor.submit(cls.load_instrument,client=client, path=src, lookback=lb)
+                    executor.submit(
+                        cls.load_instrument,
+                        client=client,
+                        path=src,
+                        lookback=lb,
+                        load_history=load_history,
+                    )
                     for src, lb in zip(source, lookbacks)
                 ]
             for future in tqdm(
@@ -562,6 +571,82 @@ class Instrument:
         logger.debug("Instruments loaded successfully.")
         return loaded_instruments
 
+
+    def _calculate_lookback_dates(self, client, lookback):
+        """Walks backwards to calculate the start and end dates based on holidays."""
+        end_date = self.date - timedelta(days=1)
+        start_date = end_date
+        days_found = 0
+
+        while days_found < lookback:
+            if not client.is_exchange_holiday(start_date, exchange=self.exchange):
+                days_found += 1
+            if days_found < lookback:
+                start_date -= timedelta(days=1)
+                
+        return start_date, end_date
+
+
+    def _build_date_chunks(self, start_date, end_date):
+        """Pre-calculates monthly chunk boundaries to avoid API batch restrictions."""
+        date_chunks = []
+        curr_start = start_date
+        while curr_start <= end_date:
+            curr_end = min(
+                curr_start + relativedelta(months=1) - timedelta(days=1), end_date
+            )
+            date_chunks.append((curr_start, curr_end))
+            curr_start = curr_end + timedelta(days=1)
+        return date_chunks
+
+
+    def _fetch_historical_chunks(self, client, date_chunks):
+        """Queries the upstream API for each chunk, silently ignoring non-existent periods."""
+        historical_dfs = []
+        for c_start, c_end in date_chunks:
+            chunk_data = self.load_previous(
+                client, from_date=c_start, to_date=c_end, isexpired=True
+            )
+            if chunk_data is not None and not chunk_data.empty:
+                historical_dfs.append(chunk_data)
+        return historical_dfs
+
+
+    def load_historical_df(self, client, lookback) -> pd.DataFrame:
+        """
+        Loads historical data chunks and applies cleanup.
+        Guarantees a clean DataFrame return type even if the contract didn't exist yet.
+        """
+        if lookback <= 0:
+            return pd.DataFrame()
+
+        # 1. Resolve timeline windows and fetch valid chunks
+        start_date, end_date = self._calculate_lookback_dates(client, lookback)
+        date_chunks = self._build_date_chunks(start_date, end_date)
+        data_dfs = self._fetch_historical_chunks(client, date_chunks)
+
+        # 2. Guard Clause: Handle the scenario where the contract didn't exist yet across the entire window
+        if not data_dfs:
+            logger.warning(
+                f"No historical data available for {self.key}. "
+                f"Contract likely was not listed on the exchange during this lookback window."
+            )
+            return pd.DataFrame()  # Explicitly return an empty DataFrame to protect downstream code
+
+        # 3. Combine retrieved chunks securely (Fixes your single-chunk dropping bug)
+        data = pd.concat(data_dfs, ignore_index=True)
+
+        # 4. Apply Cleanup (Fixes your wrong-return variable mutation bug)
+        clean_data = data.copy()
+        clean_data[["open", "high", "low", "close"]] = clean_data[["open", "high", "low", "close"]].ffill()
+        clean_data["vol"] = (
+            pd.to_numeric(clean_data["vol"], errors="coerce")
+            .fillna(0)
+            .astype(float)
+        )
+
+        return clean_data
+
     @classmethod
     def load_instrument(
         cls,
@@ -570,13 +655,13 @@ class Instrument:
         lookback: int = 0,
         data: pd.DataFrame | None = None,
         metadata: dict | None = None,
+        load_history: bool = False,
     ):
         """
         Loads instrument data and metadata into the instance. The data is expected to be a DataFrame containing the candles, and
         the metadata is expected to contain keys like 'instrument_key', 'date', 'expiry', 'lot_size', 'strike_price', and 'freeze_quantity'.
         """
-        from core.upstox_methods import DATA_DIR, UpstoxClient
-        from core.anatomy import load_parquet
+        from core.upstox_methods import DATA_DIR
         from dateutil.relativedelta import relativedelta
         from datetime import timedelta
 
@@ -599,55 +684,50 @@ class Instrument:
         ins.unit = str(metadata.get("unit", "minute"))
         ins.interval = str(metadata.get("interval", "1"))
         ins.type = str(metadata.get("instrument_type", "Index"))
-        ins.exchange=str(metadata.get("exchange","NSE"))
-        
-# --- NEW BATCH CHUNKING LOGIC ---
-        historical_dfs = []
-        
-        if lookback > 0:
-            end_date = ins.date - timedelta(days=1)
-            start_date = end_date
-            days_found = 0
-            
-            # 1. Walk backwards to find the exact start_date
-            while days_found < lookback:
-                if client.is_exchange_holiday(start_date, exchange=ins.exchange):
-                    #logger.info(f"Skipping holiday/weekend : {start_date}")
-                    pass
-                else:
-                    days_found += 1
-                
-                if days_found < lookback:
-                    start_date -= timedelta(days=1)
+        ins.exchange = str(metadata.get("exchange", "NSE"))
 
-            # 2. Pre-calculate the explicit chunk boundaries to prevent infinite loops
-            date_chunks = []
-            curr_start = start_date
-            while curr_start <= end_date:
-                curr_end = min(curr_start + relativedelta(months=1) - timedelta(days=1), end_date)
-                date_chunks.append((curr_start, curr_end))
-                curr_start = curr_end + timedelta(days=1)
+        if load_history:
+            historical_dfs = []
 
-            # 3. Execute the strictly defined chunks
-            for c_start, c_end in date_chunks:
-                logger.info(f"Fetching historical chunk: {c_start} to {c_end}")
-                
-                chunk_data = cls.load_previous(
-                    client, 
-                    ins, 
-                    from_date=c_start, 
-                    to_date=c_end, 
-                    isexpired=True
-                )
-                
-                if chunk_data is not None and not chunk_data.empty:
-                    historical_dfs.append(chunk_data)
+            if lookback > 0:
+                end_date = ins.date - timedelta(days=1)
+                start_date = end_date
+                days_found = 0
 
-        # --------------------------------
+                # 1. Walk backwards to find the exact start_date
+                while days_found < lookback:
+                    if not client.is_exchange_holiday(
+                        start_date, exchange=ins.exchange
+                    ):
+                        days_found += 1
 
-        data_dfs = historical_dfs + [data]
-        data = pd.concat(data_dfs, ignore_index=True) if len(data_dfs) > 1 else data
-        # --------------------------------
+                    if days_found < lookback:
+                        start_date -= timedelta(days=1)
+
+                # 2. Pre-calculate the explicit chunk boundaries to prevent infinite loops
+                date_chunks = []
+                curr_start = start_date
+                while curr_start <= end_date:
+                    curr_end = min(
+                        curr_start + relativedelta(months=1) - timedelta(days=1),
+                        end_date,
+                    )
+                    date_chunks.append((curr_start, curr_end))
+                    curr_start = curr_end + timedelta(days=1)
+
+                # 3. Execute the strictly defined chunks
+                for c_start, c_end in date_chunks:
+                    logger.info(f"Fetching historical chunk: {c_start} to {c_end}")
+
+                    chunk_data = ins.load_previous(
+                        client, from_date=c_start, to_date=c_end, isexpired=True
+                    )
+
+                    if chunk_data is not None and not chunk_data.empty:
+                        historical_dfs.append(chunk_data)
+
+            data_dfs = historical_dfs + [data]
+            data = pd.concat(data_dfs, ignore_index=True) if len(data_dfs) > 1 else data
 
         if data is not None and not data.empty:
             clean_data = data.copy()
@@ -686,13 +766,13 @@ class Portfolio:
         df = pd.json_normalize(data)
         if df.empty:
             return pd.DataFrame()
-        df.sort_values(by="Buy_timestamp").reset_index(drop=True)
+        df.sort_values(by="buy_timestamp").reset_index(drop=True)
         if verbose:
             from num2words import num2words
 
         display_df = df.copy()
-        if "Trade_id" in display_df.columns:
-            display_df.drop(columns=["Trade_id"], inplace=True)
+        if "trade_id" in display_df.columns:
+            display_df = display_df.drop(columns=["trade_id"])
 
         # 1. Round the dataframe FIRST
         float_cols = display_df.select_dtypes(include=["float"]).columns
@@ -700,20 +780,31 @@ class Portfolio:
 
         # 2. Print with floatfmt=".2f" to forcefully format all floats in the markdown table
         print(
-            display_df[["Buy_timestamp", "PnL", "Remark", "Buy_qty", "Sell_qty", "Buy_price", "Sell_price"]]
-            .to_markdown(tablefmt="pretty", floatfmt=".2f")
+            display_df[
+                [
+                    "buy_timestamp",
+                    "pnl",
+                    "remark",
+                    "buy_qty",
+                    "sell_qty",
+                    "buy_price",
+                    "sell_price",
+                ]
+            ].to_markdown(tablefmt="pretty", floatfmt=".2f")
         )
 
-        print(f"Total Movement: {display_df['Movement'].sum():.2f}")
-        print(f"Final PnL: {display_df['PnL'].sum():.2f}")
-        print(f"Final PnL (words): {num2words(display_df['PnL'].sum().round(), lang='en_IN')}")
+        print(f"Total movement: {display_df['movement'].sum():.2f}")
+        print(f"Final pnl: {display_df['pnl'].sum():.2f}")
+        print(
+            f"Final pnl (words): {num2words(display_df['pnl'].sum().round(), lang='en_IN')}"
+        )
 
         # 3. Use single quotes inside the method arguments to avoid breaking the f-string
         logger.info(
             f"Final Results:\n{display_df.to_markdown(tablefmt='pretty', floatfmt='.2f')}"
         )
-        logger.info(f"Total Movement: {display_df['Movement'].sum():.2f}")
-        logger.info(f"Final PnL: {display_df['PnL'].sum():.2f}")
+        logger.info(f"Total movement: {display_df['movement'].sum():.2f}")
+        logger.info(f"Final pnl: {display_df['pnl'].sum():.2f}")
         return df
 
 
@@ -726,6 +817,7 @@ class Bucket:
     spot: Instrument | None = None
     legs: dict[str, Instrument] = field(default_factory=dict)
     open_position: Position | None = None
+    probability_matrix : Any = None
 
     def add_leg(self, item: Instrument | dict[str, Instrument], leg_type):
         """Adds Instrument instances as legs to a bucket object.
@@ -745,18 +837,18 @@ class Bucket:
 
 @dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
 class Trade:
-    Trade_id: str = None
-    Instrument_key :str = None
-    Side: str = None
-    Buy_timestamp: datetime = None
-    Buy_price: float = None
-    Buy_qty: int = None
-    Sell_timestamp: datetime = None
-    Sell_price: float = None
-    Sell_qty: int = None
-    Movement: float = None
-    PnL: float = None
-    Remark: str = ""
-    Buy_conditions: dict = None
-    Sell_conditions: dict = None
-    total: float = None
+    trade_id: None | str = None
+    instrument_key: None | str = None
+    side: None | str = None
+    buy_timestamp: None | datetime = None
+    buy_price: None | float = None
+    buy_qty: None | int = None
+    sell_timestamp: None | datetime = None
+    sell_price: None | float = None
+    sell_qty: None | int = None
+    movement: None | float = None
+    pnl: None | float = None
+    remark: None | str = ""
+    buy_conditions: None | dict = None
+    sell_conditions: None | dict = None
+    total: None | float = None

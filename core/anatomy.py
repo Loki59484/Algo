@@ -9,7 +9,9 @@ The Plotdata class is used to store the data for plotting the charts in the GUI.
 # ------Import Libraries------
 from abc import ABC, abstractmethod
 from typing import Any, Callable
-from functools import partial
+from datetime import datetime
+from collections import deque
+from dataclasses import asdict
 from pathlib import Path
 from random import randint
 import pandas_ta as ta
@@ -26,8 +28,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 # IMPORTING CUSTOM MODULES
-from core.datatypes import *
-from core.methods import *
+from core.datatypes import Instrument, Portfolio, Position, Bucket, Order, Candle, Tick
 from core.upstox_methods import UpstoxClient, LOG_DIR
 
 
@@ -69,7 +70,7 @@ class Streamer(ABC):
     """
 
     @abstractmethod
-    async def start():
+    async def start(self):
         pass
 
 
@@ -94,7 +95,6 @@ class BaseEngine(ABC):
         if isinstance(item, Instrument):
             self.instruments[item.key] = item
             logger.debug(f"Instrument {item.key} added to Trader instance.")
-            return
 
     def add_bucket(self, buckets: Bucket | list):
         if isinstance(buckets, Bucket):
@@ -170,7 +170,6 @@ class SimfeedStreamer(Streamer):
         if isinstance(item, Instrument):
             self.instruments[item.key] = item
             logger.debug(f"Instrument {item.key} added to Trader instance.")
-            return
 
     async def start(self):
         await self.simulator(buffer=self.buffer)
@@ -181,7 +180,6 @@ class SimfeedStreamer(Streamer):
         items_to_simulate = deepcopy(self.instruments)
 
         sim_data = {key:[sim_candle for sim_candle in items.historical_candles if sim_candle.timestamp.date()==items.date] for key,items in items_to_simulate.items()}
-        #total_idx = max([len(data.historical_candles) for data in items_to_simulate.values()])
         while True:
             try: 
                 if not self.stopevent.is_set():                    
@@ -200,7 +198,7 @@ class SimfeedStreamer(Streamer):
                     logger.info("Simulation Stopped")
                     break
             except Exception as e:
-                logger.exception(f"Exception while simulating.")
+                logger.exception(f"Exception while simulating.\n{e}")
 
 
 
@@ -255,7 +253,6 @@ class Strategy:
             return
         if isinstance(indicators, list):
             self.indicators.ta.extend(indicators)
-            return
 
     @classmethod
     def apply_study(
@@ -309,7 +306,6 @@ class Strategy:
         ---------
         pd.DataFrame
         """
-
         if isinstance(target, deque):
             if not target:
                 return None
@@ -351,7 +347,7 @@ class SimBroker(Broker):
             return None
         order_id = str(randint(1000000, 9999999))
 
-        if not key in self.portfolio.positions.keys():
+        if key not in self.portfolio.positions.keys():
             self.portfolio.positions[key] = Position(
                 instrument_token=key, buy_price=price, day_buy_quantity=qty
             )
@@ -374,7 +370,7 @@ class SimBroker(Broker):
         """
         amount = price * qty
         self.portfolio.funds.credit(amount)
-        if not key in self.portfolio.positions.keys():
+        if key not in self.portfolio.positions.keys():
             logger.warning(f"Sell order not placed as no positions are open for {key}.")
             return -1
         qty += self.portfolio.positions[key].day_sell_quantity
@@ -389,6 +385,7 @@ class SimBroker(Broker):
         return super().cancel_order()
 
     def modify_order(self):
+        # Simulating does not make any order modifications
         pass
 
 
@@ -563,12 +560,10 @@ class BulkSimulator(BaseEngine):
 
     def calculate_units(self, close, lot_size):
         balance = self.portfolio.funds.available_margin
-        logger.info(balance)
         return min(
             max(0, int((balance / close) - ((balance / close) % lot_size))),
             (32000 - (32000 % lot_size)),
         )
-
     def run(self):
         self.processor()
         report = self.portfolio.get_report()

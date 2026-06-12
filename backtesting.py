@@ -1,26 +1,37 @@
 from collections import defaultdict
-from types import SimpleNamespace
+from dataclasses import asdict
 from functools import partial
-import datetime as dt
-import numpy as np
-import joblib
+from typing import Optional
 from pathlib import Path
 import pandas_ta as ta
 from tqdm import tqdm
+import datetime as dt
+import pandas as pd
+import numpy as np
+import hashlib
+import logging
+import joblib
 import shutil
+import json
 import sys
+
 
 ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+logger = logging.getLogger(__name__)
 
 # IMPORTING CUSTOM MODULES
+from core.datatypes import Instrument, Trade, Portfolio, Bucket, Funds
+from core.upstox_methods import UpstoxClient, DATA_DIR
+from core.methods import setup_cli, to_ist
 from core import anatomy as ana
-from core.datatypes import *
-from core.upstox_methods import *
 
-# from core.planner import Planner
 ustox = UpstoxClient()
+supert = "SUPERT_14_2.0"
+
+MATRIX_CACHE_DIR = Path(__file__).resolve().parent / "data" / "cache" / "matrices"
+MATRIX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 print(
     "--------------------SIMULATOR--------------------".center(
@@ -30,14 +41,45 @@ print(
 
 # DEFINING BUY-SELL PARAMETERS
 
-def generate_prob_matrix(client:UpstoxClient,instrument:Instrument,lookback, force_rebuild=False):
-    back_data = Instrument.load_previous(client=client,ins=instrument,from_date=instrument.date-timedelta(days=lookback), isexpired=True)
-    return back_data
 
+# DEFINING BUY-SELL PARAMETERS
+#def buy_signal(df, **kwargs):
+#    try:
+#        # --- SHARED MOMENTUM (Both CE and PE need the same ADXR waking up) ---
+#        adxr_trend = (16 < df["ADXR_14_2"]) & (df["ADXR_14_2"] < 25)
+#
+#        dmi_gap = abs(df["DMP_14"] - df["DMN_14"])
+#
+#        ce_signal = (
+#            (df["close"] > df[supert])
+#            & (df[supert] > df[supert].shift(1))  # Supertrend steps UP
+#            & adxr_trend
+#            & (df["DMP_14"] > df["DMN_14"])  # Bulls in control
+#            & (dmi_gap > 10)  # Massive bullish gap
+#            & (df["RSI_14"] > 59)  # Spot RSI shows extreme breakout strength
+#        )
+#
+#        pe_signal = (
+#            (df["close"] < df[supert])
+#            & (df[supert] < df[supert].shift(1))  # Supertrend steps DOWN
+#            & adxr_trend
+#            & (df["DMN_14"] > df["DMP_14"])  # Bears in control
+#            & (dmi_gap > 11)  # Massive bearish gap
+#            & (df["RSI_14"] < 37)  # Spot RSI shows extreme breakdown weakness
+#        )
+#
+#        signal_col = pd.Series(None, index=df.index, dtype=object)
+#        signal_col[ce_signal] = "CE"
+#        signal_col[pe_signal] = "PE"
+#
+#        return signal_col
+#
+#    except Exception as e:
+#        logger.exception(e)
 
-
-def buy_signal(df, probability_matrix, **kwargs):
+def buy_signal(df, **kwargs):
     try:
+        breakpoint()
         # ---------------------------------------------------------
         # STEP 1: Discretize the Data into States (Vectorized)
         # ---------------------------------------------------------
@@ -88,21 +130,23 @@ def buy_signal(df, probability_matrix, **kwargs):
         logger.exception(e)
 
 
+
+
 def sell_signal(df, **kwargs):
     square_off = pd.Series(df.index == df.index[-1], index=df.index)
-    ce_signal = (df["close"] > df["SUPERT_14_2.0"]) & (
-        df["SUPERT_14_2.0"] == df["SUPERT_14_2.0"].shift(1)
+    ce_signal = (df["close"] > df[supert]) & (
+        df[supert] == df[supert].shift(1)
     ) | square_off
-    pe_signal = (df["close"] < df["SUPERT_14_2.0"]) & (
-        df["SUPERT_14_2.0"] == df["SUPERT_14_2.0"].shift(1)
+    pe_signal = (df["close"] < df[supert]) & (
+        df[supert] == df[supert].shift(1)
     ) | square_off
-    
+
     signal_col = pd.Series(None, index=df.index, dtype=object)
     signal_col[ce_signal] = "CE"
     signal_col[pe_signal] = "PE"
 
-    return signal_col 
-    
+    return signal_col
+
 
 def buy_cons(**kwargs):
     target = kwargs.get("bucket", None)
@@ -120,273 +164,308 @@ def _worker(df: pd.DataFrame, study: ta.Study, kwargs):
     return ana.Strategy.apply_study(df, study=study, **kwargs)
 
 
+def check_tradable_hours(row):
+    t = row.timestamp.time()
+    morning_window = dt.time(10, 0) < t < dt.time(12, 0)
+    noon_window = dt.time(13, 0) < t < dt.time(14, 0)
+    final_window = t > dt.time(15, 0)
+    return any([morning_window, noon_window, final_window])
+
+
+def execute_sell(spot_row, row, option, trader, bucket, side=None):
+    stoploss = bucket.open_position.stoploss
+    target = bucket.open_position.target
+
+    stoploss_hit = row.low <= stoploss if stoploss is not None else False
+    target_hit = row.high >= target if target is not None else False
+    signal_hit = spot_row.sell_signal == side
+
+    if not (stoploss_hit or target_hit or signal_hit):
+        return
+
+    if pd.isna(row.next_open):
+        return  # End of dataset
+
+    if stoploss_hit:
+        base_price = max(0.05, min(stoploss, row.open))
+        exec_time, remark, buffer_points = row.timestamp, "SL", 5.00
+    elif target_hit:
+        base_price = max(target, row.open)
+        exec_time, remark, buffer_points = row.timestamp, "Target", 2.00
+    else:
+        base_price = max(0.05, row.next_open if pd.notna(row.next_open) else row.close)
+        exec_time = row.next_time if pd.notna(row.next_time) else row.timestamp
+        remark, buffer_points = "Signal", 2.00
+
+    buffered_sell_price = max(0.05, round(base_price - buffer_points, 2))
+
+    status = trader.broker.sell_order(
+        key=option.key,
+        qty=trader.portfolio.report[-1].buy_qty,
+        price=buffered_sell_price,
+    )
+
+    if status == -1:
+        logger.error(f"Sell order not placed for {option.key}. Gapped down past limit.")
+        return
+
+    report: Trade = trader.portfolio.report[-1]
+    report.sell_conditions = spot_row._asdict()
+    report.sell_qty = report.buy_qty
+    report.sell_timestamp = exec_time
+    report.sell_price = base_price
+    report.remark = remark
+    report.movement = report.sell_price - report.buy_price
+    report.pnl = (report.sell_price * report.sell_qty) - (
+        report.buy_price * report.buy_qty
+    )
+    report.total = trader.portfolio.funds.total
+
+    bucket.open_position = None
+    logger.info(f"Trade executed successfully for sell side ({remark}).")
+
+
+def execute_buy(spot_row, row, option, trader, strategy, bucket, **kwargs):
+    if check_tradable_hours(row):
+        return -1
+
+    buy_cons = (
+        strategy.buy_constraints(bucket=bucket, **kwargs)
+        if strategy.buy_constraints
+        else True
+    )
+    if not buy_cons:
+        return -1
+
+    exec_price = row.next_open if pd.notna(row.next_open) else row.close
+    exec_time = row.next_time if pd.notna(row.next_time) else row.timestamp
+    if exec_price < 50.0:
+        return -1
+
+    qty = trader.calculate_units(close=exec_price, lot_size=option.lot_size)
+    logger.info(f"lot_size = {option.lot_size}, qty = {qty}")
+
+    if qty == 0:
+        return -1
+
+    status = trader.broker.buy_order(
+        key=option.key, price=exec_price, qty=qty, order_type="LIMIT"
+    )
+    if status is None:
+        return -1
+
+    pos, ord_id = status[0], status[1]
+    bucket.open_position = pos
+    bucket.open_position.stoploss = max(0.05, exec_price - (1.5 * row.ATR))
+    bucket.open_position.target = exec_price + (22 * row.ATR)
+
+    trader.portfolio.report.append(
+        Trade(
+            trade_id=ord_id,
+            instrument_key=option.key,
+            buy_timestamp=exec_time,
+            side=option.type,
+            buy_price=exec_price,
+            buy_qty=qty,
+            buy_conditions=spot_row._asdict(),
+        )
+    )
+    logger.info("Trade executed successfully for buy side.")
+    return 1
+
+
+import pandas as pd
+
+def prepare_bucket_data(
+    bucket: Bucket,
+    strategy: ana.Strategy,
+    call_option: Instrument,
+    put_option: Instrument,
+    spot: Instrument,
+    **kwargs,
+):
+    """Lazy loads data, calculates TA, builds probability matrix, and formats it safely."""
+
+    if not call_option or not put_option:
+        logger.warning(f"NoneType option found for bucket {bucket.date}")
+        return False
+
+    # 1. Load 30-day history
+    spot_df = spot.load_historical_df(ustox, lookback=30)
+    ce_df = call_option.load_historical_df(ustox, lookback=3)
+    pe_df = put_option.load_historical_df(ustox, lookback=3)
+
+    # ---------------------------------------------------------
+    # 2. BULLETPROOF DATA FORMATTER
+    # ---------------------------------------------------------
+    def secure_prep(df):
+        if df is None or df.empty:
+            return pd.DataFrame()
+            
+        df = df.rename(columns={"vol": "volume"})
+        
+        if "timestamp" in df.columns:
+            df["timestamp"] = to_ist(df["timestamp"])
+            # Explicit reassignment (no inplace=True)
+            df = df.set_index("timestamp")
+            
+        # Hard-enforce DatetimeIndex to prevent .normalize() crashes
+        df.index = pd.to_datetime(df.index)
+        df.sort_index(inplace=True)
+        return df
+
+    spot_df = secure_prep(spot_df)
+    ce_df = secure_prep(ce_df)
+    pe_df = secure_prep(pe_df)
+
+    # 3. Calculate Technical Indicators on the full 30-day history
+    spot_df = _worker(spot_df, strategy.indicators, kwargs)
+    spot_df = spot_df.rename(
+        columns={
+            "SUPERT_14_2.0": "SUPERT", # Included this in case you use it in matrix logic
+            "SUPERTl_14_2.0": "SUPERTl",
+            "SUPERTs_14_2.0": "SUPERTs",
+            "SUPERTd_14_2.0": "SUPERTd",
+            "ADX_14": "ADX",
+            "ADXR_14_2": "ADXR",
+            "DMP_14": "DMP",
+            "DMN_14": "DMN",
+            "ATRr_14": "ATR",
+            "EMA_200": "EMA",
+            "RSI_14": "RSI",
+        }
+    )
+
+    # Guard clause in case indicator generation fails or data is missing
+    if spot_df.empty or ce_df.empty or pe_df.empty:
+        return False
+
+    target_date = pd.Timestamp(bucket.date)
+
+    historical_training_data = spot_df[spot_df.index < target_date]
+    
+    prob_matrix = get_cached_probability_matrix(
+        df=historical_training_data,
+        instrument_key=spot.key,
+        date_str=str(bucket.date),
+        strategy_params={"lookback": 30, "supertrend": 2.0, "adxr": 16} 
+    )
+    
+    # Bypass dataclass freeze lock if Bucket is frozen
+    bucket.probability_matrix= prob_matrix
+
+    spot_df = spot_df[spot_df.index.normalize() == target_date]
+    ce_df = ce_df[ce_df.index.normalize() == target_date]
+    pe_df = pe_df[pe_df.index.normalize() == target_date]
+
+    if spot_df.empty or ce_df.empty or pe_df.empty:
+        return False
+        
+
+    spot.historical_df = spot_df.reset_index()
+
+    # 6. Finalize Option specific logic
+    for opt, df in zip((call_option, put_option), (ce_df, pe_df)):
+        df = df.reset_index()
+        df["next_open"] = df["open"].shift(-1)
+        df["next_time"] = df["timestamp"].shift(-1)
+        df["ATR"] = df.ta.atr()
+        opt.historical_df = df.reset_index(drop=True)
+        
+    return True
+
+
+def process_single_bucket(bucket, trader, strategy, **kwargs):
+    spot: Instrument = bucket.spot
+    call_option: Instrument = bucket.legs.get("CE")
+    put_option: Instrument = bucket.legs.get("PE")
+    bucket_status = prepare_bucket_data(
+        bucket=bucket,
+        strategy=strategy,
+        call_option=call_option,
+        put_option=put_option,
+        spot=spot,
+        **kwargs,
+    )
+    if not bucket_status:
+        return False
+    try:
+        for row_ce, row_pe, row_spot in zip(
+            call_option.historical_df.itertuples(),
+            put_option.historical_df.itertuples(),
+            spot.historical_df.itertuples(),
+        ):
+
+            if bucket.open_position is None:
+                if (
+                    all(
+                        (
+                            row_spot.buy_signal == "CE",
+                            execute_buy(
+                                spot_row=row_spot,
+                                row=row_ce,
+                                option=call_option,
+                                trader=trader,
+                                strategy=strategy,
+                                bucket=bucket,
+                                **kwargs,
+                            ),
+                        )
+                    )
+                    == 1
+                ):
+                    continue
+                if (
+                    all(
+                        (
+                            row_spot.buy_signal == "PE",
+                            execute_buy(
+                                spot_row=row_spot,
+                                row=row_pe,
+                                option=put_option,
+                                trader=trader,
+                                strategy=strategy,
+                                bucket=bucket,
+                                **kwargs,
+                            ),
+                        )
+                    )
+                    == 1
+                ):
+                    continue
+            else:
+                if bucket.open_position.instrument_token == call_option.key:
+                    execute_sell(
+                        row_spot, row_ce, call_option, trader, bucket, side="CE"
+                    )
+                elif bucket.open_position.instrument_token == put_option.key:
+                    execute_sell(
+                        row_spot, row_pe, put_option, trader, bucket, side="PE"
+                    )
+
+    except Exception as e:
+        logger.exception(f"{e}")
+        breakpoint()
+    finally:
+        spot.historical_df = None
+        call_option.historical_df = None
+        put_option.historical_df = None
+
+
 def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
-    # planner : Planner = Planner()
-    # args = SimpleNamespace()
-    # plan = planner.create()
     pd.set_option("display.max_rows", None)
     pd.set_option("display.max_columns", None)
     pd.set_option("display.width", 1000)
     pd.set_option("display.colheader_justify", "center")
 
-    flat_subjects = [
-        subject
-        for bucket in trader.buckets
-        for subject in bucket.legs.values()
-        if subject
-    ]
-    subject_spots = [bucket.spot for bucket in trader.buckets]
-
-    raw_spot_dfs = [
-        pd.DataFrame([asdict(candle) for candle in subject.historical_candles])
-        .assign(key=subject.key)
-        .set_index("timestamp")
-        for subject in subject_spots
-    ]
-
-    raw_option_dfs = [
-        pd.DataFrame([asdict(candle) for candle in subject.historical_candles])
-        .assign(key=subject.key)
-        .set_index("timestamp")
-        for subject in flat_subjects
-    ]
-
-    worker_func = partial(_worker, study=strategy.indicators, kwargs=kwargs)
-    logger.info("Computing indicators")
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        finished_dfs = list(
-            tqdm(
-                executor.map(worker_func, raw_spot_dfs),
-                total=len(raw_spot_dfs),
-                desc="Calculating TA & Signals",
-            )
-        )
-
-    # EXTRACT TRADING DAY DATA, DROPPING WARM UP CANDLES
-    for spot, enriched_df in zip(subject_spots, finished_dfs):
-        try:
-            if enriched_df.empty:
-                continue
-            if "key" in enriched_df.columns:
-                df_key = enriched_df["key"].iloc[0]
-                if spot.key != df_key:
-                    raise ValueError(
-                        f"CRITICAL MISMATCH: Spot key {spot.key} does not match DF key {df_key}"
-                    )
-            # ------------------------
-            truncated_df = enriched_df[enriched_df.index.date >= spot.date]
-            truncated_df = truncated_df.rename(
-                columns={
-                    "SUPERT_14_2.0": "SUPERT",
-                    "SUPERTl_14_2.0": "SUPERTl",
-                    "SUPERTs_14_2.0": "SUPERTs",
-                    "SUPERTd_14_2.0": "SUPERTd",
-                    "ADX_14": "ADX",
-                    "ADXR_14_2": "ADXR",
-                    "DMP_14": "DMP",
-                    "DMN_14": "DMN",
-                    "ATRr_14": "ATR",
-                    "EMA_200": "EMA",
-                    "RSI_14": "RSI",
-                }
-            )
-            spot.historical_df = truncated_df.reset_index()
-        except Exception as e:
-            breakpoint(header=f"{e}")
-    logger.info("Technical analysis completed")
-
-    for subject, df in zip(flat_subjects, raw_option_dfs):
-
-        if "key" in df.columns:
-            df_key = df["key"].iloc[0]
-            if subject.key != df_key:
-                raise ValueError(
-                    f"CRITICAL MISMATCH: Subject key {subject.key} does not match DF key {df_key}"
-                )
-        # ------------------------
-
-        subject.historical_df = df[df.index.date >= subject.date].reset_index()
-
     trader.buckets.sort(key=lambda b: b.date)
 
-    def execute_sell(spot_row: tuple, row: tuple, option, trader, stoploss, target=None, side=None):
-        stoploss_hit = row.low <= stoploss if stoploss is not None else False
-        target_hit = row.high >= target if target is not None else False
-        signal_hit = spot_row.sell_signal == side
-
-        if stoploss_hit or target_hit or signal_hit:
-            
-            if pd.isna(row.next_open):
-                return # End of dataset
-                
-            if stoploss_hit:
-                # Clamp the worst-case fill to 0.05
-                base_price = max(0.05, min(stoploss, row.open))
-                exec_time = row.timestamp
-                remark = "SL"
-                buffer_points = 5.00 
-            elif target_hit:
-                base_price = max(target, row.open)
-                exec_time = row.timestamp
-                remark = "Target"
-                buffer_points = 2.00
-            else:
-                # Clamp the open price to 0.05
-                base_price = max(0.05, row.next_open if pd.notna(row.next_open) else row.close)
-                exec_time = row.next_time if pd.notna(row.next_time) else row.timestamp
-                remark = "Signal"
-                buffer_points = 2.00
-
-            # Clamp the limit price sent to the broker to 0.05
-            buffered_sell_price = max(0.05, round(base_price - buffer_points, 2))
-
-            # 3. Fire the Limit IOC Order
-            status = trader.broker.sell_order(
-                key=option.key,
-                qty=trader.portfolio.report[-1].Buy_qty,
-                price=buffered_sell_price, # Sent to broker as the Limit Price
-            )
-            
-            if status == -1:
-                logger.error(f"Sell order not placed for {option.key}. Gapped down past limit.")
-                return
-
-            # 4. Log the trade (assuming the exchange matched us at the base_price)
-            report: Trade = trader.portfolio.report[-1]
-            report.Sell_conditions = spot_row._asdict() # Log Spot conditions, not option conditions
-            report.Sell_qty = report.Buy_qty
-            report.Sell_timestamp = exec_time 
-            report.Sell_price = base_price    # Log the actual executed market price
-            report.Remark = remark
-            report.Movement = report.Sell_price - report.Buy_price
-            report.PnL = (report.Sell_price * report.Sell_qty) - (report.Buy_price * report.Buy_qty)
-            report.total = trader.portfolio.funds.total
-            
-            bucket.open_position = None
-            logger.info(f"Trade executed successfully for sell side ({remark}).")
-
-    def execute_buy(spot_row,row: tuple, option: Instrument, trader: ana.Trader):
-        if (
-            dt.time(12, 00)
-            > row.timestamp.time()
-            > dt.time(10, 00)  # Block 10 AM to 12 PM
-            or dt.time(14, 00) > row.timestamp.time() > dt.time(13, 00)
-            or row.timestamp.time() > dt.time(15, 0)
-        ):
-            return -1
-        buy_cons = (
-            strategy.buy_constraints(bucket=bucket, **kwargs)
-            if strategy.buy_constraints is not None
-            else True
-        )
-        if buy_cons:
-            
-            exec_price = row.next_open if pd.notna(row.next_open) else row.close
-            exec_time = row.next_time if pd.notna(row.next_time) else row.timestamp 
-            if exec_price < 50.0:
-                return -1 # Ignore cheap, decaying lotto options
-            
-            qty = trader.calculate_units(
-                close=exec_price,
-                lot_size=option.lot_size,
-            )
-            logger.info(f"lot_size = {option.lot_size}, qty = {qty}")
-            if qty == 0:
-                return -1
-            status = trader.broker.buy_order(
-                key=option.key,
-                price=exec_price,
-                qty=qty,
-                order_type='LIMIT'
-            )
-
-            if status is None:
-                return -1
-            pos, ord_id = status[0], status[1]
-            bucket.open_position = pos
-            bucket.open_position.stoploss = max(0.05, exec_price - (1.5 * row.ATR))
-            bucket.open_position.target =  exec_price + (22  * row.ATR)
-            trader.portfolio.report.append(
-                Trade(
-                    Trade_id=ord_id,
-                    Instrument_key=option.key,
-                    Buy_timestamp=exec_time,
-                    Side=option.type,
-                    Buy_price=exec_price,
-                    Buy_qty=qty,
-                    Buy_conditions=spot_row._asdict(),
-                )
-            )
-
-            logger.info("Trade executed successfully for buy side.")
-            return 1
-
-    for bucket in trader.buckets:
-        call_option = bucket.legs.get("CE")
-        put_option = bucket.legs.get("PE")
-        call_option.historical_df["next_open"] = call_option.historical_df["open"].shift(-1)
-        call_option.historical_df["next_time"] = call_option.historical_df["timestamp"].shift(-1)
-        put_option.historical_df["next_open"] = put_option.historical_df["open"].shift(-1)
-        put_option.historical_df["next_time"] = put_option.historical_df["timestamp"].shift(-1)
-        call_option.historical_df["ATR"] = call_option.historical_df.ta.atr()
-        put_option.historical_df["ATR"] = put_option.historical_df.ta.atr()
-        spot = bucket.spot
-                
-        if call_option is None or put_option is None:
-            logger.warning(f"NoneType option found for bucket {bucket.date}")
+    for bucket in tqdm(trader.buckets, desc="Backtesting buckets", leave=False):
+        status = process_single_bucket(bucket, trader, strategy, **kwargs)
+        if status == False:
             continue
-        try:
-            if (
-                not hasattr(spot, "historical_df")
-                or not hasattr(put_option, "historical_df")
-                or not hasattr(spot, "historical_df")
-            ):
-                logger.info(
-                    f"Missing historical_df for bucket {bucket.date}. Skipping."
-                )
-                continue
-
-            for row_ce, row_pe, row_spot in zip(
-                call_option.historical_df.itertuples(),
-                put_option.historical_df.itertuples(),
-                spot.historical_df.itertuples(),
-            ):
-                if bucket.open_position is None:
-                    if row_spot.buy_signal == "CE":
-                        status = execute_buy(row_spot,row_ce, call_option, trader)
-                        if status == 1:
-                            continue
-
-                    if row_spot.buy_signal == "PE":
-                        status = execute_buy(row_spot,row_pe, put_option, trader)
-                        if status == 1:
-                            continue
-                else:
-                    stoploss = bucket.open_position.stoploss
-                    target = bucket.open_position.target
-                    if bucket.open_position.instrument_token == call_option.key:
-                        execute_sell(
-                            row_spot,
-                            row_ce,
-                            call_option,
-                            trader,
-                            stoploss,
-                            target,
-                            side="CE",
-                        )
-                    elif bucket.open_position.instrument_token == put_option.key:
-                        execute_sell(
-                            row_spot,
-                            row_pe,
-                            put_option,
-                            trader,
-                            stoploss,
-                            target,
-                            side="PE",
-                        )
-        except Exception as e:
-            breakpoint(header=f"{e}")
         trader.portfolio.funds.settle()
+
     logger.info("Simulation Complete")
 
 
@@ -401,6 +480,92 @@ strat.add_indicators(
         {"kind": "vwap"},
     ]
 )
+
+def _assign_market_states(df: pd.DataFrame) -> pd.Series:
+    """Discretizes continuous indicators into a finite set of market states."""
+    # Using your previous SuperTrend and ADXR logic as the baseline
+    trend_up = df['close'] > df['SUPERT']
+    adxr_strong = df['ADXR'] > 16
+
+    # Vectorized state assignment using np.where
+    states = np.where(trend_up & adxr_strong, 'Strong Bull',
+             np.where(trend_up & ~adxr_strong, 'Weak Bull',
+             np.where(~trend_up & adxr_strong, 'Strong Bear', 'Weak Bear')))
+    
+    return pd.Series(states, index=df.index, name="State")
+
+
+def _assign_future_outcomes(df: pd.DataFrame, buffer_pts: float = 2.0) -> pd.Series:
+    """Classifies the NEXT candle's movement as UP, DOWN, or FLAT."""
+    next_close = df['close'].shift(-1)
+    
+    # If the next close moved more than 'buffer_pts', classify as UP/DOWN. Otherwise FLAT.
+    outcomes = np.where(next_close > df['close'] + buffer_pts, 'UP', 
+               np.where(next_close < df['close'] - buffer_pts, 'DOWN', 'FLAT'))
+    
+    return pd.Series(outcomes, index=df.index, name="Outcome")
+
+
+def generate_probability_matrix(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """
+    Builds a column-stochastic transition matrix from a historical DataFrame.
+    Rows = Future Outcomes (DOWN, FLAT, UP)
+    Columns = Current States
+    """
+    if df.empty or len(df) < 2:
+        return None
+
+    df = df.copy()
+    
+    # 1. Attach States and Outcomes
+    df['State'] = _assign_market_states(df)
+    df['Outcome'] = _assign_future_outcomes(df)
+
+    # Drop the very last row, as we cannot know its "future" outcome
+    df = df.iloc[:-1]
+
+    # 2. Build the Raw Tally Matrix
+    # We put Outcomes on the index (rows) and States on the columns
+    tally = pd.crosstab(df['Outcome'], df['State'])
+
+    # Ensure all outcomes exist in the matrix rows, even if the market never went "UP" in this 30-day window
+    expected_outcomes = ['DOWN', 'FLAT', 'UP']
+    tally = tally.reindex(expected_outcomes, fill_value=0)
+
+    # 3. Normalize into Probabilities (Column-Stochastic)
+    # Divide every cell by the total sum of its specific column
+    prob_matrix = tally.div(tally.sum(axis=0), axis=1)
+
+    # 4. Handle Edge Cases (States that never occurred)
+    # If a state never happened, its column sum is 0, resulting in NaNs.
+    # We fill these with uniform uncertainty (33% chance for all directions).
+    uniform_prob = 1.0 / len(expected_outcomes)
+    prob_matrix = prob_matrix.fillna(uniform_prob)
+
+    return prob_matrix
+
+
+def get_cached_probability_matrix(df: pd.DataFrame, instrument_key: str, date_str: str, strategy_params: dict):
+    """Retrieves a cached matrix, or builds and caches a new one if missing/updated."""
+    
+    # Create a unique hash based on your strategy parameters
+    param_string = json.dumps(strategy_params, sort_keys=True)
+    param_hash = hashlib.md5(param_string.encode()).hexdigest()[:6]
+    
+    safe_key = instrument_key.replace("|", "_").replace(" ", "_")
+    cache_path = MATRIX_CACHE_DIR / f"{safe_key}_{date_str}_{param_hash}.joblib"
+    
+    if cache_path.exists():
+        return joblib.load(cache_path)
+        
+    # Build it if it doesn't exist
+    matrix = generate_probability_matrix(df)
+    
+    if matrix is not None:
+        joblib.dump(matrix, cache_path)
+        
+    return matrix
+
 
 prtf = Portfolio(funds=Funds(starting_capital=100000))
 
@@ -425,7 +590,6 @@ trader.set_processor(
 args = setup_cli()
 INSTRUMENT_CACHE = DATA_DIR / "cache" / f"{args.bulk[0]}_instruments_cache.joblib"
 files = list((DATA_DIR / "historical" / args.bulk[0]).rglob("*.parquet"))
-# files = [file for file in files if "INDEX" not in str(file)]
 files.sort()
 
 if INSTRUMENT_CACHE.exists() and not args.no_cache:
@@ -442,12 +606,12 @@ daily_buckets = defaultdict(dict)
 for instrument in tqdm(
     trader.instruments.values(), desc="Filtering instruments", leave=False
 ):
-    breakpoint()
-    leg_type = (
-        "CE"
-        if "CE" in instrument.type
-        else "PE" if "PE" in instrument.type else "INDEX"
-    )
+    if "CE" in instrument.type:
+        leg_type = "CE"
+    elif "PE" in instrument.type:
+        leg_type = "PE"
+    else:
+        leg_type = "INDEX"
     daily_buckets[instrument.date][leg_type] = instrument
 for trade_date, legs in tqdm(
     daily_buckets.items(), desc="Loading Buckets", leave=False
