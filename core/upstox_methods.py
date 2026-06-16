@@ -569,8 +569,7 @@ class UpstoxClient:
         candles = response.get("data", {}).get("candles", [])
         
         if not candles:
-            breakpoint()
-            logger.warning(f"Empty Dataframe returned for {instrument_key} | from_date: {from_date} | to_date: {to_date} | respose: \n{response}", stack_info=True)
+            logger.warning(f"Empty Dataframe returned for {instrument_key} | from_date: {from_date} | to_date: {to_date} | response: \n{response}", stack_info=True)
             return pd.DataFrame()
 
         # 6. Build and Return DataFrame

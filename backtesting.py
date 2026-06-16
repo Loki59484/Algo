@@ -28,7 +28,8 @@ from core.methods import setup_cli, to_ist
 from core import anatomy as ana
 
 ustox = UpstoxClient()
-supert = "SUPERT_14_2.0"
+SUPERT = "SUPERT"
+ADXR = "ADXR"
 
 MATRIX_CACHE_DIR = Path(__file__).resolve().parent / "data" / "cache" / "matrices"
 MATRIX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -39,87 +40,54 @@ print(
     )
 )
 
-# DEFINING BUY-SELL PARAMETERS
+DEFAULT_BUY_PARAMS = {
+    "adxr_min": 16,
+    "adxr_max": 25,
+    "dmi_gap_ce": 10,
+    "dmi_gap_pe": 11,
+    "rsi_ce_min": 59,
+    "rsi_pe_max": 37
+}
+def buy_signal(df, params=None, **kwargs):
+    """Executes trades strictly based on the 30-Day Probability Matrix."""
+    if params is None:
+        params = DEFAULT_BUY_PARAMS
 
-
-# DEFINING BUY-SELL PARAMETERS
-#def buy_signal(df, **kwargs):
-#    try:
-#        # --- SHARED MOMENTUM (Both CE and PE need the same ADXR waking up) ---
-#        adxr_trend = (16 < df["ADXR_14_2"]) & (df["ADXR_14_2"] < 25)
-#
-#        dmi_gap = abs(df["DMP_14"] - df["DMN_14"])
-#
-#        ce_signal = (
-#            (df["close"] > df[supert])
-#            & (df[supert] > df[supert].shift(1))  # Supertrend steps UP
-#            & adxr_trend
-#            & (df["DMP_14"] > df["DMN_14"])  # Bulls in control
-#            & (dmi_gap > 10)  # Massive bullish gap
-#            & (df["RSI_14"] > 59)  # Spot RSI shows extreme breakout strength
-#        )
-#
-#        pe_signal = (
-#            (df["close"] < df[supert])
-#            & (df[supert] < df[supert].shift(1))  # Supertrend steps DOWN
-#            & adxr_trend
-#            & (df["DMN_14"] > df["DMP_14"])  # Bears in control
-#            & (dmi_gap > 11)  # Massive bearish gap
-#            & (df["RSI_14"] < 37)  # Spot RSI shows extreme breakdown weakness
-#        )
-#
-#        signal_col = pd.Series(None, index=df.index, dtype=object)
-#        signal_col[ce_signal] = "CE"
-#        signal_col[pe_signal] = "PE"
-#
-#        return signal_col
-#
-#    except Exception as e:
-#        logger.exception(e)
-
-def buy_signal(df, **kwargs):
     try:
-        breakpoint()
-        # ---------------------------------------------------------
-        # STEP 1: Discretize the Data into States (Vectorized)
-        # ---------------------------------------------------------
-        # You still need to define what "State" the row is in based on your indicators.
-        trend_up = df["close"] > df["SUPERT_14_2.0"]
-        adxr_trend = (16 < df["ADXR_14_2"]) & (df["ADXR_14_2"] < 25)
-        
-        df['State'] = np.where(trend_up & adxr_trend, 'Strong Bull',
-                      np.where(trend_up & ~adxr_trend, 'Weak Bull',
-                      np.where(~trend_up & adxr_trend, 'Strong Bear', 'Weak Bear')))
+        bucket: Bucket = kwargs.get("bucket", None)
+        probability_matrix = getattr(bucket, "probability_matrix", None)
 
-        # ---------------------------------------------------------
-        # STEP 2: The Matrix Math (Vectorized Inference)
-        # ---------------------------------------------------------
-        # Convert the textual states into a binary One-Hot Matrix (Rows x 4 States)
-        # We reindex to ensure the columns exactly match the rows of your probability_matrix
+        # Guard against a missing matrix (e.g., first few days of simulation)
+        if probability_matrix is None or probability_matrix.empty:
+            return pd.Series(None, index=df.index, dtype=object)
+
+        # 1. Ask the central engine: What is the exact State of every minute today?
+        df['State'] = _assign_market_states(df, params=params)
+
+        # 2. Convert the states into a binary dummy matrix
         state_matrix = pd.get_dummies(df['State']).reindex(
-            columns=probability_matrix.index, fill_value=0
+            columns=probability_matrix.columns, fill_value=0
         ).to_numpy()
 
-        # MULTIPLY!
-        # (N_Rows x 4 States) @ (4 States x 3 Outcomes) = (N_Rows x 3 Probabilities)
-        # Let's assume your matrix columns are ['DOWN', 'FLAT', 'UP']
-        prob_output = state_matrix @ probability_matrix.to_numpy()
+        # 3. Matrix Multiplication: State (N, 6) @ Matrix.T (6, 3) = Probabilities (N, 3)
+        prob_output = state_matrix @ probability_matrix.T.to_numpy()
 
-        # Extract the probability columns into the dataframe for easy handling
+        # Extract the specific probabilities into the DataFrame
         df['Prob_DOWN'] = prob_output[:, 0]
         df['Prob_FLAT'] = prob_output[:, 1]
-        df['Prob_UP'] = prob_output[:, 2]
+        df['Prob_UP']   = prob_output[:, 2]
 
         # ---------------------------------------------------------
-        # STEP 3: The Confidence Threshold (Bridge to Actions)
+        # THE EXECUTION TRIGGERS
         # ---------------------------------------------------------
-        # Define how certain the matrix must be to trigger a trade
-        CONFIDENCE_THRESHOLD = 0.65  # 65% probability required
+        CONFIDENCE_THRESHOLD = 0.12
+        # Optional: Master Volatility Gatekeeper. Even if probability is high, 
+        # we might only want to trade if ADXR shows the market is actually moving.
+        adxr_safe = (params["adxr_min"] < df["ADXR"]) & (df["ADXR"] < params["adxr_max"])
 
-        ce_signal = df['Prob_UP'] > CONFIDENCE_THRESHOLD
-        pe_signal = df['Prob_DOWN'] > CONFIDENCE_THRESHOLD
+        ce_signal = (df['Prob_UP'] > CONFIDENCE_THRESHOLD) & adxr_safe
+        pe_signal = (df['Prob_DOWN'] > CONFIDENCE_THRESHOLD) & adxr_safe
 
-        # Return exactly what your existing execution engine expects
         signal_col = pd.Series(None, index=df.index, dtype=object)
         signal_col[ce_signal] = "CE"
         signal_col[pe_signal] = "PE"
@@ -127,25 +95,68 @@ def buy_signal(df, **kwargs):
         return signal_col
 
     except Exception as e:
-        logger.exception(e)
+        logger.exception(f"Error generating matrix buy signals: {e}")
+        return pd.Series(None, index=df.index, dtype=object)
 
 
+def sell_signal(df, params=None, enable_trailing=False, **kwargs):
+    """Generates square-off signals based on opposing market probabilities."""
+    if params is None:
+        params = DEFAULT_BUY_PARAMS
 
+    try:
+        bucket: Bucket = kwargs.get("bucket", None)
+        probability_matrix = getattr(bucket, "probability_matrix", None)
+        
+        # 1. HARD RULE: End of dataset square-off (Guarantees no orphaned positions overnight)
+        square_off = pd.Series(df.index == df.index[-1], index=df.index)
 
-def sell_signal(df, **kwargs):
-    square_off = pd.Series(df.index == df.index[-1], index=df.index)
-    ce_signal = (df["close"] > df[supert]) & (
-        df[supert] == df[supert].shift(1)
-    ) | square_off
-    pe_signal = (df["close"] < df[supert]) & (
-        df[supert] == df[supert].shift(1)
-    ) | square_off
+        # 2. HARD RULE: Trailing stop condition (If enabled, acts as an absolute disaster-stop)
+        if enable_trailing:
+            ce_trend_break = df["close"] < df[SUPERT]
+            pe_trend_break = df["close"] > df[SUPERT]
+        else:
+            ce_trend_break = False
+            pe_trend_break = False
 
-    signal_col = pd.Series(None, index=df.index, dtype=object)
-    signal_col[ce_signal] = "CE"
-    signal_col[pe_signal] = "PE"
+        # 3. PROBABILISTIC EXITS
+        if probability_matrix is not None and not probability_matrix.empty:
+            # Re-evaluate the state using the central engine
+            df['State'] = _assign_market_states(df, params=params)
+            
+            # Matrix Multiplication (Same as buy_signal)
+            state_matrix = pd.get_dummies(df['State']).reindex(
+                columns=probability_matrix.columns, fill_value=0
+            ).to_numpy()
 
-    return signal_col
+            prob_output = state_matrix @ probability_matrix.T.to_numpy()
+            
+            prob_down = prob_output[:, 0]
+            prob_up   = prob_output[:, 2]
+
+            EXIT_CONFIDENCE = 0.70 
+            
+            ce_prob_exit = prob_down > EXIT_CONFIDENCE  # If holding CE, bail if high chance of DOWN
+            pe_prob_exit = prob_up > EXIT_CONFIDENCE    # If holding PE, bail if high chance of UP
+            
+        else:
+            # Fallback if the matrix is missing during early warm-up days
+            ce_prob_exit = (df["close"] > df[SUPERT]) & (df[SUPERT] == df[SUPERT].shift(1))
+            pe_prob_exit = (df["close"] < df[SUPERT]) & (df[SUPERT] == df[SUPERT].shift(1))
+
+        ce_signal = ce_prob_exit | ce_trend_break 
+        pe_signal = pe_prob_exit | pe_trend_break 
+
+        signal_col = pd.Series(None, index=df.index, dtype=object)
+        signal_col[ce_signal] = "CE"
+        signal_col[pe_signal] = "PE"        
+        signal_col[square_off] = "SQUARE_OFF" 
+
+        return signal_col
+
+    except Exception as e:
+        logger.exception(f"Error generating matrix sell signals: {e}")
+        return pd.Series(None, index=df.index, dtype=object)
 
 
 def buy_cons(**kwargs):
@@ -158,7 +169,7 @@ def sell_cons(**kwargs):
     return False if target.open_position is None else True
 
 
-def _worker(df: pd.DataFrame, study: ta.Study, kwargs):
+def _worker(df: pd.DataFrame, study: ta.Study, **kwargs):
     if len(df) < 200:
         return pd.DataFrame(columns=df.columns)
     return ana.Strategy.apply_study(df, study=study, **kwargs)
@@ -178,13 +189,11 @@ def execute_sell(spot_row, row, option, trader, bucket, side=None):
 
     stoploss_hit = row.low <= stoploss if stoploss is not None else False
     target_hit = row.high >= target if target is not None else False
-    signal_hit = spot_row.sell_signal == side
+    signal_hit = spot_row.sell_signal in [side, "SQUARE_OFF"]
 
     if not (stoploss_hit or target_hit or signal_hit):
         return
 
-    if pd.isna(row.next_open):
-        return  # End of dataset
 
     if stoploss_hit:
         base_price = max(0.05, min(stoploss, row.open))
@@ -193,9 +202,10 @@ def execute_sell(spot_row, row, option, trader, bucket, side=None):
         base_price = max(target, row.open)
         exec_time, remark, buffer_points = row.timestamp, "Target", 2.00
     else:
+        # This fallback elegantly handles the final candle of the day
         base_price = max(0.05, row.next_open if pd.notna(row.next_open) else row.close)
         exec_time = row.next_time if pd.notna(row.next_time) else row.timestamp
-        remark, buffer_points = "Signal", 2.00
+        remark, buffer_points = "Square off" if spot_row.sell_signal == "SQUARE_OFF" else "Signal", 2.00
 
     buffered_sell_price = max(0.05, round(base_price - buffer_points, 2))
 
@@ -213,7 +223,9 @@ def execute_sell(spot_row, row, option, trader, bucket, side=None):
     report.sell_conditions = spot_row._asdict()
     report.sell_qty = report.buy_qty
     report.sell_timestamp = exec_time
-    report.sell_price = base_price
+    
+    report.sell_price = buffered_sell_price 
+    
     report.remark = remark
     report.movement = report.sell_price - report.buy_price
     report.pnl = (report.sell_price * report.sell_qty) - (
@@ -243,7 +255,7 @@ def execute_buy(spot_row, row, option, trader, strategy, bucket, **kwargs):
         return -1
 
     qty = trader.calculate_units(close=exec_price, lot_size=option.lot_size)
-    logger.info(f"lot_size = {option.lot_size}, qty = {qty}")
+    logger.info(f"lot_size = {option.lot_size}, qty = {qty}, balance= {trader.portfolio.funds.available_margin}")
 
     if qty == 0:
         return -1
@@ -257,7 +269,7 @@ def execute_buy(spot_row, row, option, trader, strategy, bucket, **kwargs):
     pos, ord_id = status[0], status[1]
     bucket.open_position = pos
     bucket.open_position.stoploss = max(0.05, exec_price - (1.5 * row.ATR))
-    bucket.open_position.target = exec_price + (22 * row.ATR)
+    bucket.open_position.target = exec_price + (5 * row.ATR)
 
     trader.portfolio.report.append(
         Trade(
@@ -290,16 +302,13 @@ def prepare_bucket_data(
         logger.warning(f"NoneType option found for bucket {bucket.date}")
         return False
 
-    # 1. Load 30-day history
     spot_df = spot.load_historical_df(ustox, lookback=30)
-    ce_df = call_option.load_historical_df(ustox, lookback=3)
-    pe_df = put_option.load_historical_df(ustox, lookback=3)
+    ce_df = call_option.load_historical_df(ustox, lookback=1)
+    pe_df = put_option.load_historical_df(ustox, lookback=1)
 
-    # ---------------------------------------------------------
-    # 2. BULLETPROOF DATA FORMATTER
-    # ---------------------------------------------------------
     def secure_prep(df):
         if df is None or df.empty:
+            logger.info("secure prep failed")
             return pd.DataFrame()
             
         df = df.rename(columns={"vol": "volume"})
@@ -319,10 +328,10 @@ def prepare_bucket_data(
     pe_df = secure_prep(pe_df)
 
     # 3. Calculate Technical Indicators on the full 30-day history
-    spot_df = _worker(spot_df, strategy.indicators, kwargs)
+    spot_df = _worker(spot_df, strategy.indicators, **kwargs)
     spot_df = spot_df.rename(
         columns={
-            "SUPERT_14_2.0": "SUPERT", # Included this in case you use it in matrix logic
+            "SUPERT_14_2.0":"SUPERT",
             "SUPERTl_14_2.0": "SUPERTl",
             "SUPERTs_14_2.0": "SUPERTs",
             "SUPERTd_14_2.0": "SUPERTd",
@@ -333,6 +342,7 @@ def prepare_bucket_data(
             "ATRr_14": "ATR",
             "EMA_200": "EMA",
             "RSI_14": "RSI",
+            "VWAP_D": "VWAP",
         }
     )
 
@@ -343,7 +353,13 @@ def prepare_bucket_data(
     target_date = pd.Timestamp(bucket.date)
 
     historical_training_data = spot_df[spot_df.index < target_date]
-    
+    spot_df_new = spot_df[spot_df.index.normalize() == target_date]
+    ce_df_new = ce_df[ce_df.index.normalize() == target_date].reindex(spot_df_new.index, method="ffill")
+    pe_df_new = pe_df[pe_df.index.normalize() == target_date].reindex(spot_df_new.index, method="ffill")
+    if spot_df_new.empty or ce_df_new.empty or pe_df_new.empty:
+        logger.info(f"empty df - spot: {spot_df_new.empty} | ce: {ce_df_new.empty} | pe: {pe_df_new.empty}")
+        return False
+
     prob_matrix = get_cached_probability_matrix(
         df=historical_training_data,
         instrument_key=spot.key,
@@ -354,24 +370,22 @@ def prepare_bucket_data(
     # Bypass dataclass freeze lock if Bucket is frozen
     bucket.probability_matrix= prob_matrix
 
-    spot_df = spot_df[spot_df.index.normalize() == target_date]
-    ce_df = ce_df[ce_df.index.normalize() == target_date]
-    pe_df = pe_df[pe_df.index.normalize() == target_date]
-
-    if spot_df.empty or ce_df.empty or pe_df.empty:
-        return False
-        
-
-    spot.historical_df = spot_df.reset_index()
-
-    # 6. Finalize Option specific logic
     for opt, df in zip((call_option, put_option), (ce_df, pe_df)):
         df = df.reset_index()
         df["next_open"] = df["open"].shift(-1)
         df["next_time"] = df["timestamp"].shift(-1)
         df["ATR"] = df.ta.atr()
         opt.historical_df = df.reset_index(drop=True)
-        
+    
+
+    ana.Strategy.gen_signals(spot_df_new,buy_cond=trader.strategy.buy_conditon, sell_cond=trader.strategy.sell_condition,bucket=bucket,**kwargs)
+
+
+    spot.historical_df = spot_df_new.reset_index()
+
+    # 6. Finalize Option specific logic
+
+    logger.info("Bucket Prepared")        
     return True
 
 
@@ -379,6 +393,7 @@ def process_single_bucket(bucket, trader, strategy, **kwargs):
     spot: Instrument = bucket.spot
     call_option: Instrument = bucket.legs.get("CE")
     put_option: Instrument = bucket.legs.get("PE")
+    
     bucket_status = prepare_bucket_data(
         bucket=bucket,
         strategy=strategy,
@@ -387,8 +402,11 @@ def process_single_bucket(bucket, trader, strategy, **kwargs):
         spot=spot,
         **kwargs,
     )
+
     if not bucket_status:
+        logging.info("Bucket not prepared")
         return False
+        
     try:
         for row_ce, row_pe, row_spot in zip(
             call_option.historical_df.itertuples(),
@@ -397,42 +415,28 @@ def process_single_bucket(bucket, trader, strategy, **kwargs):
         ):
 
             if bucket.open_position is None:
-                if (
-                    all(
-                        (
-                            row_spot.buy_signal == "CE",
-                            execute_buy(
-                                spot_row=row_spot,
-                                row=row_ce,
-                                option=call_option,
-                                trader=trader,
-                                strategy=strategy,
-                                bucket=bucket,
-                                **kwargs,
-                            ),
-                        )
-                    )
-                    == 1
-                ):
+                if row_spot.buy_signal == "CE" and execute_buy(
+                    spot_row=row_spot,
+                    row=row_ce,
+                    option=call_option,
+                    trader=trader,
+                    strategy=strategy,
+                    bucket=bucket,
+                    **kwargs,
+                ) == 1:
                     continue
-                if (
-                    all(
-                        (
-                            row_spot.buy_signal == "PE",
-                            execute_buy(
-                                spot_row=row_spot,
-                                row=row_pe,
-                                option=put_option,
-                                trader=trader,
-                                strategy=strategy,
-                                bucket=bucket,
-                                **kwargs,
-                            ),
-                        )
-                    )
-                    == 1
-                ):
+                    
+                if row_spot.buy_signal == "PE" and execute_buy(
+                    spot_row=row_spot,
+                    row=row_pe,
+                    option=put_option,
+                    trader=trader,
+                    strategy=strategy,
+                    bucket=bucket,
+                    **kwargs,
+                ) == 1:
                     continue
+                    
             else:
                 if bucket.open_position.instrument_token == call_option.key:
                     execute_sell(
@@ -451,7 +455,6 @@ def process_single_bucket(bucket, trader, strategy, **kwargs):
         call_option.historical_df = None
         put_option.historical_df = None
 
-
 def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
     pd.set_option("display.max_rows", None)
     pd.set_option("display.max_columns", None)
@@ -465,6 +468,9 @@ def procedure(trader: ana.Trader, strategy: ana.Strategy, **kwargs):
         if status == False:
             continue
         trader.portfolio.funds.settle()
+        if trader.portfolio.funds.available_margin < 1000:
+            logger.info("Trader Bankrupt!")
+            break
 
     logger.info("Simulation Complete")
 
@@ -481,25 +487,31 @@ strat.add_indicators(
     ]
 )
 
-def _assign_market_states(df: pd.DataFrame) -> pd.Series:
-    """Discretizes continuous indicators into a finite set of market states."""
-    # Using your previous SuperTrend and ADXR logic as the baseline
-    trend_up = df['close'] > df['SUPERT']
-    adxr_strong = df['ADXR'] > 16
+def _assign_market_states(df: pd.DataFrame, params: dict = None) -> pd.Series:
+    if params is None:
+        params = DEFAULT_BUY_PARAMS
 
-    # Vectorized state assignment using np.where
-    states = np.where(trend_up & adxr_strong, 'Strong Bull',
-             np.where(trend_up & ~adxr_strong, 'Weak Bull',
-             np.where(~trend_up & adxr_strong, 'Strong Bear', 'Weak Bear')))
+    # Base Trend (Supertrend)
+    trend_up = df["close"] > df["SUPERT"]
+    
+    # Redefining Momentum using your updated params dictionary
+    dmi_gap = abs(df["DMP"] - df["DMN"])
+    bullish_momentum = (df["RSI"] > params["rsi_ce_min"]) & (dmi_gap > params["dmi_gap_ce"])
+    bearish_momentum = (df["RSI"] < params["rsi_pe_max"]) & (dmi_gap > params["dmi_gap_pe"])
+    price_above_vwap = df["close"] > df["VWAP"]
+
+    states = np.where(trend_up & bullish_momentum & price_above_vwap, 'Strong Bull',
+             np.where(trend_up & ~bullish_momentum, 'Weak Bull',
+             np.where(~trend_up & bearish_momentum, 'Strong Bear',
+             np.where(~trend_up & ~bearish_momentum, 'Weak Bear', 
+             'Sideways'))))
     
     return pd.Series(states, index=df.index, name="State")
 
-
-def _assign_future_outcomes(df: pd.DataFrame, buffer_pts: float = 2.0) -> pd.Series:
-    """Classifies the NEXT candle's movement as UP, DOWN, or FLAT."""
+def _assign_future_outcomes(df: pd.DataFrame, buffer_pts: float = 10.0) -> pd.Series:
+    
     next_close = df['close'].shift(-1)
     
-    # If the next close moved more than 'buffer_pts', classify as UP/DOWN. Otherwise FLAT.
     outcomes = np.where(next_close > df['close'] + buffer_pts, 'UP', 
                np.where(next_close < df['close'] - buffer_pts, 'DOWN', 'FLAT'))
     
@@ -507,38 +519,26 @@ def _assign_future_outcomes(df: pd.DataFrame, buffer_pts: float = 2.0) -> pd.Ser
 
 
 def generate_probability_matrix(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """
-    Builds a column-stochastic transition matrix from a historical DataFrame.
-    Rows = Future Outcomes (DOWN, FLAT, UP)
-    Columns = Current States
-    """
+    """Builds the probability matrix from the 30-day historical data."""
     if df.empty or len(df) < 2:
         return None
 
     df = df.copy()
     
-    # 1. Attach States and Outcomes
+    # 1. Ask the central engine what the states were over the last 30 days
     df['State'] = _assign_market_states(df)
+    
+    # 2. Assign the outcomes (UP, DOWN, FLAT)
     df['Outcome'] = _assign_future_outcomes(df)
-
-    # Drop the very last row, as we cannot know its "future" outcome
     df = df.iloc[:-1]
 
-    # 2. Build the Raw Tally Matrix
-    # We put Outcomes on the index (rows) and States on the columns
+    # 3. Build the Matrix
     tally = pd.crosstab(df['Outcome'], df['State'])
-
-    # Ensure all outcomes exist in the matrix rows, even if the market never went "UP" in this 30-day window
-    expected_outcomes = ['DOWN', 'FLAT', 'UP']
+    expected_outcomes = ['DOWN', 'FLAT', 'UP']  
     tally = tally.reindex(expected_outcomes, fill_value=0)
-
-    # 3. Normalize into Probabilities (Column-Stochastic)
-    # Divide every cell by the total sum of its specific column
+    
     prob_matrix = tally.div(tally.sum(axis=0), axis=1)
-
-    # 4. Handle Edge Cases (States that never occurred)
-    # If a state never happened, its column sum is 0, resulting in NaNs.
-    # We fill these with uniform uncertainty (33% chance for all directions).
+    
     uniform_prob = 1.0 / len(expected_outcomes)
     prob_matrix = prob_matrix.fillna(uniform_prob)
 
@@ -548,7 +548,6 @@ def generate_probability_matrix(df: pd.DataFrame) -> Optional[pd.DataFrame]:
 def get_cached_probability_matrix(df: pd.DataFrame, instrument_key: str, date_str: str, strategy_params: dict):
     """Retrieves a cached matrix, or builds and caches a new one if missing/updated."""
     
-    # Create a unique hash based on your strategy parameters
     param_string = json.dumps(strategy_params, sort_keys=True)
     param_hash = hashlib.md5(param_string.encode()).hexdigest()[:6]
     
@@ -558,7 +557,6 @@ def get_cached_probability_matrix(df: pd.DataFrame, instrument_key: str, date_st
     if cache_path.exists():
         return joblib.load(cache_path)
         
-    # Build it if it doesn't exist
     matrix = generate_probability_matrix(df)
     
     if matrix is not None:

@@ -48,9 +48,7 @@ class DatatypeBase:
 
 @dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
 class Funds:
-    """"""
-
-    starting_capital: float  # changes only after settlement
+    starting_capital: float  
     pnl: float = 0.0
     total: float = 0.0
     used_margin: float = 0.0
@@ -61,56 +59,68 @@ class Funds:
     payin_amount: float = 0.0
     span_margin: float = 0.0
 
-    @classmethod
-    def parse_funds_json(cls: Funds, data: dict, new: bool = True) -> Funds | None:
-        if new:
-            cls = cls(starting_capital=data["equity"]["available_margin"])
-
-        cls.adhoc_margin: float = data["equity"]["adhoc_margin"]
-        cls.available_margin: float = data["equity"]["available_margin"]
-        cls.exposure_margin: float = data["equity"]["exposure_margin"]
-        cls.notional_cash: float = data["equity"]["notional_cash"]
-        cls.payin_amount: float = data["equity"]["payin_amount"]
-        cls.span_margin: float = data["equity"]["span_margin"]
-        cls.used_margin: float = data["equity"]["used_margin"]
-        return cls if new else None
-
     def __post_init__(self):
-        logger.info(f"Starting with capital:{self.starting_capital}")
+        logger.info(f"Starting with capital: {self.starting_capital}")
         self.available_margin = self.total = self.starting_capital
 
-    def credit(self, amount):
+    def credit(self, amount: float):
+        """Called by the broker when an asset is sold."""
         self.total += amount
-        self.available_margin = (
-            self.total if self.total < self.starting_capital else self.starting_capital
-        )
+        self.used_margin = 0.0  # Clean reset. Open position is closed.
+        
+        # UPSTOX T+1 RULE: Realized profits are locked until settlement.
+        # We cap the 'available margin' to starting_capital, but subtract any active used_margin.
+        realized_equity = self.total + self.used_margin
+        self.available_margin = min(realized_equity, self.starting_capital) - self.used_margin
+        
         self.pnl = self.total - self.starting_capital
-        self.used_margin = max(0, self.used_margin - amount)
 
-    def debit(self, amount):
+    def debit(self, amount: float):
+        """Called by the broker when an asset is bought."""
         if amount > self.available_margin:
-            logger.error("Insufficient funds to proceed.")
+            logger.error(f"Insufficient funds. Required: {amount}, Available: {self.available_margin}")
             return -1
+            
         self.total -= amount
-        self.available_margin = (
-            self.total if self.total < self.starting_capital else self.starting_capital
-        )
-        self.pnl = self.total - self.starting_capital
         self.used_margin += amount
+        
+        # Deduct the bought amount from available margin safely while respecting the T+1 cap
+        realized_equity = self.total + self.used_margin
+        self.available_margin = min(realized_equity, self.starting_capital) - self.used_margin
+        
+        self.pnl = self.total - self.starting_capital
 
     def settle(self, simulate: bool = True, client=None):
+        """Called at the end of the day to finalize the ledger."""
         if not simulate and client is None:
-            logger.error(
-                "A client instance of `UpstoxClient` class is required if not simulating [simulate=False]."
-            )
-        logger.info(
-            f"Day settled with starting :{self.starting_capital} | pnl: {self.pnl} | available: {self.available_margin}"
-        )
-        if simulate:
-            self.available_margin = self.starting_capital = self.total
-            self.pnl = 0
+            logger.error("A client instance of `UpstoxClient` is required if not simulating.")
             return
-        self.parse_funds_json(cls=self, data=client.get_funds(), new=False)
+            
+        logger.info(
+            f"Day settled | Starting: {self.starting_capital} | End Total: {self.total} | PnL: {self.pnl}"
+        )
+        
+        if simulate:
+            # T+1 SETTLEMENT: Today's profits are officially released into tomorrow's starting capital!
+            self.starting_capital = self.total
+            self.available_margin = self.total
+            self.used_margin = 0.0
+            self.pnl = 0.0
+            return
+            
+        self.update_from_json(client.get_funds())
+
+    def update_from_json(self, data: dict):
+        """Instance method to update from live Upstox data, avoiding @classmethod bugs."""
+        eq = data.get("equity", {})
+        self.adhoc_margin = eq.get("adhoc_margin", 0.0)
+        self.available_margin = eq.get("available_margin", 0.0)
+        self.exposure_margin = eq.get("exposure_margin", 0.0)
+        self.notional_cash = eq.get("notional_cash", 0.0)
+        self.payin_amount = eq.get("payin_amount", 0.0)
+        self.span_margin = eq.get("span_margin", 0.0)
+        self.used_margin = eq.get("used_margin", 0.0)
+        self.total = self.available_margin + self.used_margin
 
 
 @dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
@@ -350,28 +360,10 @@ class Instrument:
         CACHE_DIR = DATA_DIR / "cache"
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-        target_file: Path = (
-            DATA_DIR
-            / "historical"
-            / self.exchange
-            / from_date.strftime("%Y")
-            / from_date.strftime("%m")
-            / from_date.strftime("%d")
-            / f"{self.interval}_{self.unit}"
-            / f"{self.key}.parquet"
-        )
-
         CACHE_FILE = CACHE_DIR / f"{self.key}_{from_date}_{to_date}.parquet"
         data = None
 
-        if target_file.exists():
-
-            data = load_parquet(target_file).get("data", pd.DataFrame())
-            logger.info(
-                f"Data loaded for {self.key} | Date {from_date} - {to_date} from file."
-            )
-
-        elif CACHE_FILE.exists() and CACHE_FILE.stat().st_size > 0:
+        if CACHE_FILE.exists() and CACHE_FILE.stat().st_size > 0:
 
             data = pd.read_parquet(CACHE_FILE)
             logger.info(
@@ -574,7 +566,7 @@ class Instrument:
 
     def _calculate_lookback_dates(self, client, lookback):
         """Walks backwards to calculate the start and end dates based on holidays."""
-        end_date = self.date - timedelta(days=1)
+        end_date = self.date
         start_date = end_date
         days_found = 0
 
@@ -589,14 +581,15 @@ class Instrument:
 
     def _build_date_chunks(self, start_date, end_date):
         """Pre-calculates monthly chunk boundaries to avoid API batch restrictions."""
+        
         date_chunks = []
         curr_start = start_date
+        
         while curr_start <= end_date:
-            curr_end = min(
-                curr_start + relativedelta(months=1) - timedelta(days=1), end_date
-            )
+            curr_end = min(curr_start + relativedelta(months=1) - timedelta(days=1), end_date)
             date_chunks.append((curr_start, curr_end))
             curr_start = curr_end + timedelta(days=1)
+        
         return date_chunks
 
 
@@ -620,23 +613,20 @@ class Instrument:
         if lookback <= 0:
             return pd.DataFrame()
 
-        # 1. Resolve timeline windows and fetch valid chunks
         start_date, end_date = self._calculate_lookback_dates(client, lookback)
         date_chunks = self._build_date_chunks(start_date, end_date)
         data_dfs = self._fetch_historical_chunks(client, date_chunks)
 
-        # 2. Guard Clause: Handle the scenario where the contract didn't exist yet across the entire window
         if not data_dfs:
             logger.warning(
                 f"No historical data available for {self.key}. "
                 f"Contract likely was not listed on the exchange during this lookback window."
             )
+            breakpoint()
             return pd.DataFrame()  # Explicitly return an empty DataFrame to protect downstream code
 
-        # 3. Combine retrieved chunks securely (Fixes your single-chunk dropping bug)
         data = pd.concat(data_dfs, ignore_index=True)
 
-        # 4. Apply Cleanup (Fixes your wrong-return variable mutation bug)
         clean_data = data.copy()
         clean_data[["open", "high", "low", "close"]] = clean_data[["open", "high", "low", "close"]].ffill()
         clean_data["vol"] = (

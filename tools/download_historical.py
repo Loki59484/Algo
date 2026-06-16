@@ -120,9 +120,10 @@ def download_data(spot, is_expired=False, interval=1, unit="minutes", force=Fals
             )
             if "NSE" in spot[:3]:
                 step = 50
+                offset = 150 
             else:
                 step = 100
-            offset = 600
+                offset = 300 
             spot_price = round(underlying.open.iloc[0] / step) * step
 
             call_keys = instruments[

@@ -267,8 +267,6 @@ class Strategy:
             The target dataframe containing candle data or a deque containing Candle objects which are converted to a DataFrame internally.
             The assumptions made by pandas_ta for columns being named `open`, `high`, `low`, `close` and `volume` expected.
         kwargs : Any
-            The kwargs provided are passed directly to the callables for buy and sell condition.
-
         Returns
         ---------
         pd.DataFrame
@@ -282,8 +280,17 @@ class Strategy:
             return None
 
         target.ta.study(study)
-        buy_cond = kwargs.get("buy_condition", None)
-        sell_cond = kwargs.get("sell_condition", None)
+
+        return target
+    
+    @classmethod
+    def gen_signals(cls, target: pd.DataFrame | deque[Candle], buy_cond: Callable, sell_cond: Callable, **kwargs):
+        """Generates Buy-Sell signals
+
+        Returns
+        -------
+        pd.DataFrame
+        """
 
         target["buy_signal"] = buy_cond(target, **kwargs) if buy_cond is not None else None
         target["sell_signal"] = sell_cond(target, **kwargs) if sell_cond is not None else None
@@ -316,12 +323,7 @@ class Strategy:
             return None
 
         target.ta.study(self.indicators)
-        target["buy_signal"] = (
-            self.buy_conditon(target, **kwargs) if self.buy_conditon is not None else None
-        )
-        target["sell_signal"] = (
-            self.sell_condition(target, **kwargs) if self.sell_condition is not None else None
-        )
+        
         return target
 
 
@@ -333,11 +335,8 @@ class SimBroker(Broker):
 
     def buy_order(self, key: str, price: float, qty: int, **kwargs):
         """
-        Function to acknowledge buy requests while simulating
-
-        Returns
-        -------
-        Order
+        Function to acknowledge buy requests while simulating.
+        Creates a strictly isolated position for every new execution.
         """
 
         cost = price * qty
@@ -345,18 +344,17 @@ class SimBroker(Broker):
         if status == -1:
             logger.warning("Order failed due to insufficient funds.")
             return None
+            
         order_id = str(randint(1000000, 9999999))
 
-        if key not in self.portfolio.positions.keys():
-            self.portfolio.positions[key] = Position(
-                instrument_token=key, buy_price=price, day_buy_quantity=qty
-            )
+        # Do NOT accumulate quantity. 
+        # Overwrite the dictionary key with a brand new, isolated Position object.
+        self.portfolio.positions[key] = Position(
+            instrument_token=key, 
+            buy_price=price, 
+            day_buy_quantity=qty
+        )
 
-        else:
-            qty += self.portfolio.positions[key].day_buy_quantity
-            self.portfolio.positions[key].update_position(
-                buy_price=price, day_buy_quantity=qty
-            )
         logger.info(f"{key} | Buy order placed succesfully for {qty} at {price}.")
         return self.portfolio.positions[key], order_id
 
