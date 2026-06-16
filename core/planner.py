@@ -163,7 +163,7 @@ class Planner:
             self.starting_amount = round(
                 funds["equity"]["available_margin"] - funds["equity"]["adhoc_margin"] + funds["equity"]["used_margin"] 
             )
-            self.starting_amount = 30000#self.starting_amount if self.starting_amount > 0 else 30000
+            self.starting_amount = self.starting_amount if self.starting_amount > 0 else 30000
 
         except TypeError:
             self.starting_amount = self.prev_starting
