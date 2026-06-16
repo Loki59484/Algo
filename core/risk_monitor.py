@@ -63,7 +63,7 @@ async def monitor_orders():
                         quantity=filled_qty,
                         order_type="LIMIT",
                         price=target_price,
-                        product=product_type 
+                        product= "I" if product_type == "SCP" else product_type
                     )
             
             # --- YOUR EXISTING PNL / KILL SWITCH LOGIC ---
