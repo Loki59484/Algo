@@ -55,6 +55,8 @@ async def monitor_orders():
                     logger.info(f"BUY filled for {update['trading_symbol']} at ₹{avg_price}. "
                                 f"Sending SELL limit order at ₹{target_price} to hit ₹{TRADE_PROFIT_TARGET} target.")
                     
+
+                    breakpoint()                    
                     ustox.place_order(
                         instrument_token=instrument,
                         transaction_type="SELL",
