@@ -52,7 +52,6 @@ async def monitor_orders():
                     
                     # 3. Round to the nearest 0.05 (Tick Size enforcement)
                     target_price = round(raw_target_price * 20) / 20.0
-                    
                     logger.info(f"BUY filled for {update['trading_symbol']} at ₹{avg_price}. "
                                 f"Sending SELL limit order at ₹{target_price} to hit ₹{TRADE_PROFIT_TARGET} target.")
                     
