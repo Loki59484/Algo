@@ -56,7 +56,6 @@ async def monitor_orders():
                                 f"Sending SELL limit order at ₹{target_price} to hit ₹{TRADE_PROFIT_TARGET} target.")
                     
 
-                    breakpoint()                    
                     ustox.place_order(
                         instrument_token=instrument,
                         transaction_type="SELL",
