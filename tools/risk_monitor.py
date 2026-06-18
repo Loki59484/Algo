@@ -4,11 +4,11 @@ import sys
 from pathlib import Path
 from datetime import datetime as dt
 # Setup paths based on your existing structure
-ROOT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from upstox_methods import UpstoxClient, logger  # Replace with your actual import
+from core.upstox_methods import UpstoxClient, logger  # Replace with your actual import
 from planner import Planner
 
 # Setup Logging
