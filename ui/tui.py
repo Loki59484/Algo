@@ -31,7 +31,6 @@ import io
 import pandas as pd
 import numpy as np
 from collections import deque,defaultdict
-from core import planner
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -39,6 +38,7 @@ if str(ROOT_DIR) not in sys.path:
 from core.datatypes import *
 from core.anatomy import Trader
 from core.upstox_methods import *
+from tools import planner
 
 os.environ["TEXTUAL_LOG"] = str(ROOT_DIR / "logs" / "logs.log")
 logger = logging.getLogger(__name__)

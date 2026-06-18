@@ -108,10 +108,8 @@ def sell_signal(df, params=None, enable_trailing=False, **kwargs):
         bucket: Bucket = kwargs.get("bucket", None)
         probability_matrix = getattr(bucket, "probability_matrix", None)
         
-        # 1. HARD RULE: End of dataset square-off (Guarantees no orphaned positions overnight)
         square_off = pd.Series(df.index == df.index[-1], index=df.index)
 
-        # 2. HARD RULE: Trailing stop condition (If enabled, acts as an absolute disaster-stop)
         if enable_trailing:
             ce_trend_break = df["close"] < df[SUPERT]
             pe_trend_break = df["close"] > df[SUPERT]
@@ -119,12 +117,10 @@ def sell_signal(df, params=None, enable_trailing=False, **kwargs):
             ce_trend_break = False
             pe_trend_break = False
 
-        # 3. PROBABILISTIC EXITS
         if probability_matrix is not None and not probability_matrix.empty:
             # Re-evaluate the state using the central engine
             df['State'] = _assign_market_states(df, params=params)
-            
-            # Matrix Multiplication (Same as buy_signal)
+
             state_matrix = pd.get_dummies(df['State']).reindex(
                 columns=probability_matrix.columns, fill_value=0
             ).to_numpy()
@@ -136,11 +132,10 @@ def sell_signal(df, params=None, enable_trailing=False, **kwargs):
 
             EXIT_CONFIDENCE = 0.70 
             
-            ce_prob_exit = prob_down > EXIT_CONFIDENCE  # If holding CE, bail if high chance of DOWN
-            pe_prob_exit = prob_up > EXIT_CONFIDENCE    # If holding PE, bail if high chance of UP
+            ce_prob_exit = prob_down > EXIT_CONFIDENCE 
+            pe_prob_exit = prob_up > EXIT_CONFIDENCE   
             
         else:
-            # Fallback if the matrix is missing during early warm-up days
             ce_prob_exit = (df["close"] > df[SUPERT]) & (df[SUPERT] == df[SUPERT].shift(1))
             pe_prob_exit = (df["close"] < df[SUPERT]) & (df[SUPERT] == df[SUPERT].shift(1))
 
@@ -286,7 +281,6 @@ def execute_buy(spot_row, row, option, trader, strategy, bucket, **kwargs):
     return 1
 
 
-import pandas as pd
 
 def prepare_bucket_data(
     bucket: Bucket,
@@ -315,10 +309,8 @@ def prepare_bucket_data(
         
         if "timestamp" in df.columns:
             df["timestamp"] = to_ist(df["timestamp"])
-            # Explicit reassignment (no inplace=True)
             df = df.set_index("timestamp")
             
-        # Hard-enforce DatetimeIndex to prevent .normalize() crashes
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
         return df
@@ -326,8 +318,14 @@ def prepare_bucket_data(
     spot_df = secure_prep(spot_df)
     ce_df = secure_prep(ce_df)
     pe_df = secure_prep(pe_df)
-
-    # 3. Calculate Technical Indicators on the full 30-day history
+    
+    try:
+        ce_df["ATR"] = ce_df.ta.atr()
+        pe_df["ATR"] = pe_df.ta.atr()
+    except Exception:
+        ce_df["ATR"] = 0.0
+        pe_df["ATR"] = 0.0
+    
     spot_df = _worker(spot_df, strategy.indicators, **kwargs)
     spot_df = spot_df.rename(
         columns={
@@ -346,7 +344,6 @@ def prepare_bucket_data(
         }
     )
 
-    # Guard clause in case indicator generation fails or data is missing
     if spot_df.empty or ce_df.empty or pe_df.empty:
         return False
 
@@ -354,8 +351,10 @@ def prepare_bucket_data(
 
     historical_training_data = spot_df[spot_df.index < target_date]
     spot_df_new = spot_df[spot_df.index.normalize() == target_date]
+    
     ce_df_new = ce_df[ce_df.index.normalize() == target_date].reindex(spot_df_new.index, method="ffill")
     pe_df_new = pe_df[pe_df.index.normalize() == target_date].reindex(spot_df_new.index, method="ffill")
+    
     if spot_df_new.empty or ce_df_new.empty or pe_df_new.empty:
         logger.info(f"empty df - spot: {spot_df_new.empty} | ce: {ce_df_new.empty} | pe: {pe_df_new.empty}")
         return False
@@ -367,23 +366,22 @@ def prepare_bucket_data(
         strategy_params={"lookback": 30, "supertrend": 2.0, "adxr": 16} 
     )
     
-    # Bypass dataclass freeze lock if Bucket is frozen
     bucket.probability_matrix= prob_matrix
 
-    for opt, df in zip((call_option, put_option), (ce_df, pe_df)):
+    for opt, df in zip((call_option, put_option), (ce_df_new, pe_df_new)):
         df = df.reset_index()
         df["next_open"] = df["open"].shift(-1)
-        df["next_time"] = df["timestamp"].shift(-1)
-        df["ATR"] = df.ta.atr()
-        opt.historical_df = df.reset_index(drop=True)
-    
+        
+        if "timestamp" in df.columns:
+            df["next_time"] = df["timestamp"].shift(-1)
+            
+        opt.historical_df = df.reset_index(drop=True)    
 
     ana.Strategy.gen_signals(spot_df_new,buy_cond=trader.strategy.buy_conditon, sell_cond=trader.strategy.sell_condition,bucket=bucket,**kwargs)
 
 
     spot.historical_df = spot_df_new.reset_index()
 
-    # 6. Finalize Option specific logic
 
     logger.info("Bucket Prepared")        
     return True
@@ -585,37 +583,39 @@ trader.set_processor(
         sell_condition=sell_signal,
     )
 )
-args = setup_cli()
-INSTRUMENT_CACHE = DATA_DIR / "cache" / f"{args.bulk[0]}_instruments_cache.joblib"
-files = list((DATA_DIR / "historical" / args.bulk[0]).rglob("*.parquet"))
-files.sort()
 
-if INSTRUMENT_CACHE.exists() and not args.no_cache:
-    print("Loading instruments from cache...", end="\r")
-    insts = joblib.load(INSTRUMENT_CACHE)
-    print(f"Loaded {len(insts)} instruments from cache.", end="\r")
-else:
-    insts = Instrument.load_multiple(client=ustox, source=files, lookback=30)
-    joblib.dump(insts, INSTRUMENT_CACHE)
-insts_dict = {(item.key, item.date): item for item in insts}
-trader.add_instrument(insts_dict)
-# CREATE BUCKETS FOR EACH DAY
-daily_buckets = defaultdict(dict)
-for instrument in tqdm(
-    trader.instruments.values(), desc="Filtering instruments", leave=False
-):
-    if "CE" in instrument.type:
-        leg_type = "CE"
-    elif "PE" in instrument.type:
-        leg_type = "PE"
+if __name__ == "__main__":
+    args = setup_cli()
+    INSTRUMENT_CACHE = DATA_DIR / "cache" / f"{args.bulk[0]}_instruments_cache.joblib"
+    files = list((DATA_DIR / "historical" / args.bulk[0]).rglob("*.parquet"))
+    files.sort()
+
+    if INSTRUMENT_CACHE.exists() and not args.no_cache:
+        print("Loading instruments from cache...", end="\r")
+        insts = joblib.load(INSTRUMENT_CACHE)
+        print(f"Loaded {len(insts)} instruments from cache.", end="\r")
     else:
-        leg_type = "INDEX"
-    daily_buckets[instrument.date][leg_type] = instrument
-for trade_date, legs in tqdm(
-    daily_buckets.items(), desc="Loading Buckets", leave=False
-):
-    options = {k: v for k, v in legs.items() if k in ["CE", "PE"]}
-    bucket = Bucket(trade_date, legs=options, spot=legs.get("INDEX", None))
-    trader.buckets.append(bucket)
+        insts = Instrument.load_multiple(client=ustox, source=files, lookback=30)
+        joblib.dump(insts, INSTRUMENT_CACHE)
+    insts_dict = {(item.key, item.date): item for item in insts}
+    trader.add_instrument(insts_dict)
+    # CREATE BUCKETS FOR EACH DAY
+    daily_buckets = defaultdict(dict)
+    for instrument in tqdm(
+        trader.instruments.values(), desc="Filtering instruments", leave=False
+    ):
+        if "CE" in instrument.type:
+            leg_type = "CE"
+        elif "PE" in instrument.type:
+            leg_type = "PE"
+        else:
+            leg_type = "INDEX"
+        daily_buckets[instrument.date][leg_type] = instrument
+    for trade_date, legs in tqdm(
+        daily_buckets.items(), desc="Loading Buckets", leave=False
+    ):
+        options = {k: v for k, v in legs.items() if k in ["CE", "PE"]}
+        bucket = Bucket(trade_date, legs=options, spot=legs.get("INDEX", None))
+        trader.buckets.append(bucket)
 
-trader.run()
+    trader.run()

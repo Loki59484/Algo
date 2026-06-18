@@ -48,14 +48,16 @@ ARCHIVE_PATH = (
 )
 LOG_FILE = LOG_DIR / "logs.log"
 _HOLIDAY_CACHE: dict[int, dict[str, str] | None] = {}
-EXPIRED_CACHE_DIR = Path(__file__).resolve().parent / "data" / "cache" / "expired_instruments"
+EXPIRED_CACHE_DIR = (
+    Path(__file__).resolve().parent / "data" / "cache" / "expired_instruments"
+)
 EXPIRED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 ARCHIVE_PATH.parent.mkdir(parents=True, exist_ok=True)
 # IMPORT CUSTOM MODULES
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 from core.protobuffs import MarketDataFeedV3_pb2 as pb
-from core.datatypes import Order,Tick 
+from core.datatypes import Order, Tick
 from core.methods import to_ist
 
 # STATIC VARIABLES
@@ -114,6 +116,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class UpstoxRateLimiter:
     """
     A thread-safe rate limiter tracking Upstox limits:
@@ -140,8 +143,10 @@ class UpstoxRateLimiter:
             api_method = stack[2].function if len(stack) > 2 else "Unknown API"
             origin_func = stack[3].function if len(stack) > 3 else "Unknown Logic"
             origin_line = stack[3].lineno if len(stack) > 3 else 0
-            
-            leak_info = f"[{api_method}() triggered by {origin_func}() at line {origin_line}]"
+
+            leak_info = (
+                f"[{api_method}() triggered by {origin_func}() at line {origin_line}]"
+            )
         except Exception:
             leak_info = "[Unknown Caller]"
 
@@ -191,6 +196,7 @@ class UpstoxClient:
     """
     API handler containing methods for communicating with API
     """
+
     def __init__(self):
         self.session = requests.Session()
         self.limiter = UpstoxRateLimiter()
@@ -223,7 +229,7 @@ class UpstoxClient:
                     logger.error(f"HTTP 401 Hit! Retrying after {backoff_time}s...")
                     old_token = self.access_token
                     self.access_token = self.get_access_token()
-                    print(self.access_token==old_token)
+                    print(self.access_token == old_token)
                     time.sleep(backoff_time)
                     retries += 1
                     backoff_time *= 2
@@ -364,7 +370,7 @@ class UpstoxClient:
                     SECRETS_PATH.mkdir(parents=True, exist_ok=True)
                     with open(TOKEN_FILE, "w") as outputfile:
                         outputfile.write(json.dumps(data))
-                        self.access_token = data['access_token']
+                        self.access_token = data["access_token"]
                         return data["access_token"]
 
             except Exception as e:
@@ -391,39 +397,49 @@ class UpstoxClient:
             self.update_database()
         return access_token
 
-    def set_static_ip(self,prim_ip:str,sec_ip:str=""):
+    def set_static_ip(self, prim_ip: str, sec_ip: str = ""):
 
-        url = 'https://api.upstox.com/v2/user/ip'
+        url = "https://api.upstox.com/v2/user/ip"
 
-        data = {
-            'primary_ip': f"{prim_ip}",
-            'secondary_ip': f"{sec_ip}"
-        }
+        data = {"primary_ip": f"{prim_ip}", "secondary_ip": f"{sec_ip}"}
         headers = {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json',
-                'Authorization': f"Bearer {self.get_access_token()}"
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.get_access_token()}",
         }
-        response = self._make_request("PUT",url=url,data=data,headers=headers)
+        response = self._make_request("PUT", url=url, data=data, headers=headers)
         logger.info(response)
 
     def get_static_ip(self):
 
-        url = 'https://api.upstox.com/v2/user/ip'
+        url = "https://api.upstox.com/v2/user/ip"
 
-        response = self._make_request("GET",url=url)
-        return response['data']
-    
-    def kill_switch(self,segments: list[Literal['BSE_EQ', 'NSE_EQ', 'NCD_FO', 'BCD_FO', 'NSE_FO', 'BSE_FO', 'MCX_FO', 'NSE_COM']],action: Literal['ENABLE','DISABLE']):
-        url = 'https://api.upstox.com/v2/user/kill-switch'
-        
-        payload = [ {
-        "segment": f"{segment}",
-        "action": f"{action}"
-        } 
-        for segment in segments]
-        
-        response = self._make_request("POST", url=url,data=json.dumps(payload))
+        response = self._make_request("GET", url=url)
+        return response["data"]
+
+    def kill_switch(
+        self,
+        segments: list[
+            Literal[
+                "BSE_EQ",
+                "NSE_EQ",
+                "NCD_FO",
+                "BCD_FO",
+                "NSE_FO",
+                "BSE_FO",
+                "MCX_FO",
+                "NSE_COM",
+            ]
+        ],
+        action: Literal["ENABLE", "DISABLE"],
+    ):
+        url = "https://api.upstox.com/v2/user/kill-switch"
+
+        payload = [
+            {"segment": f"{segment}", "action": f"{action}"} for segment in segments
+        ]
+
+        response = self._make_request("POST", url=url, data=json.dumps(payload))
         return response
 
     def get_funds(self):  # Getting funds available
@@ -438,9 +454,11 @@ class UpstoxClient:
 
             return 0
 
-    def _fetch_and_cache_expired(self, underlying: str, expiry_date: str) -> pd.DataFrame:
+    def _fetch_and_cache_expired(
+        self, underlying: str, expiry_date: str
+    ) -> pd.DataFrame:
         """Internal helper to manage persistent storage and protect API rate limits."""
-        # Sanitize the string to create a safe cross-platform file name
+
         safe_underlying = underlying.replace("|", "_").replace(" ", "_")
         cache_path = EXPIRED_CACHE_DIR / f"{safe_underlying}_{expiry_date}.joblib"
 
@@ -451,7 +469,9 @@ class UpstoxClient:
         response = self._make_request("GET", url)
 
         if not response or "data" not in response:
-            logger.error(f"Failed to retrieve data for expired instruments! Response: {response}")
+            logger.error(
+                f"Failed to retrieve data for expired instruments! Response: {response}"
+            )
             return pd.DataFrame()
 
         df = pd.DataFrame(response["data"])
@@ -461,50 +481,65 @@ class UpstoxClient:
 
         return df
 
-
     def get_expired_instruments(
         self,
         instrument_key: str = "",
         expiry_date: str = "",
-        underlying: Literal["NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"] = "NSE_INDEX|Nifty 50",
-    ) -> Optional[pd.DataFrame]:  
+        underlying: Literal[
+            "NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"
+        ] = "NSE_INDEX|Nifty 50",
+    ) -> Optional[pd.DataFrame]:
         """
         Returns expired instruments for specified stock/index instrument for the given expiry date.
         Utilizes a local joblib file cache to bypass redundant network requests.
         """
         data = self._fetch_and_cache_expired(underlying, expiry_date)
-
         if data.empty:
             return None if instrument_key != "" else data
 
         if instrument_key == "":
             return data
 
-        matched_keys = data.loc[data["instrument_key"].str.contains(instrument_key, regex=False), "instrument_key"]
+        matched_keys = data.loc[
+            data["instrument_key"].str.contains(instrument_key, regex=False),
+            "instrument_key",
+        ]
 
         return matched_keys if not matched_keys.empty else None
 
-    def _resolve_expired_key(self, instrument_key: str, expiry_date: str = None, underlying: Literal["BSE_INDEX|SENSEX", "NSE_INDEX|Nifty 50"] = "NSE_INDEX|Nifty 50") -> str | None:
+    def _resolve_expired_key(
+        self,
+        instrument_key: str,
+        expiry_date: str = None,
+        underlying: Literal[
+            "BSE_INDEX|SENSEX", "NSE_INDEX|Nifty 50"
+        ] = "NSE_INDEX|Nifty 50",
+    ) -> str | None:
         """Helper method to resolve the expired instrument key."""
-        import pandas as pd
         if expiry_date is not None:
-            key = self.get_expired_instruments(instrument_key=instrument_key, expiry_date=expiry_date, underlying=underlying)
+            key = self.get_expired_instruments(
+                instrument_key=instrument_key,
+                expiry_date=expiry_date,
+                underlying=underlying,
+            )
             if isinstance(key, pd.Series):
                 return key.iloc[0] if not key.empty else None
             return key
-            
+
         expiries = self.get_options_with_expiry(options=instrument_key, is_expired=True)
-        
+
         for exp_d in reversed(expiries):
-            key = self.get_expired_instruments(instrument_key=instrument_key, expiry_date=exp_d,underlying=underlying)
-            
+            key = self.get_expired_instruments(
+                instrument_key=instrument_key, expiry_date=exp_d, underlying=underlying
+            )
+
             # Safely unwrap if it's a Series
             if isinstance(key, pd.Series):
                 key = key.iloc[0] if not key.empty else None
-                
+
             if key is not None:
                 return key
-                
+
         return None
 
     def get_historical(
@@ -520,41 +555,44 @@ class UpstoxClient:
         expired_key=None,
     ):
         """
-        Returns historical candle data for specified instrument for given time interval. 
+        Returns historical candle data for specified instrument for given time interval.
         """
         # 1. Early Guard Clause
         if dtype not in {"historical", "intraday"}:
             logger.warning(f"Invalid Value for 'dtype': {dtype}")
             raise TypeError("Possible values for 'dtype' : {'historical', 'intraday'}")
 
-        # 2. Dynamic Dates 
+        # 2. Dynamic Dates
         if "NSE" in instrument_key[:3]:
             underlying = "NSE_INDEX|Nifty 50"
         elif "BSE" in instrument_key[:3]:
-            underlying = "BSE_INDEX|SENSEX" 
+            underlying = "BSE_INDEX|SENSEX"
         to_date = to_date or date.today()
         from_date = from_date or (date.today() - timedelta(days=2))
 
         if dtype == "intraday":
             url = f"https://api.upstox.com/v3/historical-candle/intraday/{instrument_key}/{unit}/{interval}"
-            
+
         elif expired_key:
             url = f"https://api.upstox.com/v2/expired-instruments/historical-candle/{expired_key}/1minute/{to_date}/{from_date}"
-            
+
         elif is_expired and "INDEX" not in instrument_key:
             # If no key was provided but it IS expired, try to dynamically resolve it
-            resolved_key = self._resolve_expired_key(instrument_key, expiry_date, underlying=underlying)
+            resolved_key = self._resolve_expired_key(
+                instrument_key, expiry_date, underlying=underlying
+            )
             if not resolved_key:
                 logger.error(f"Could not resolve expired key for {instrument_key}")
                 return None
             url = f"https://api.upstox.com/v2/expired-instruments/historical-candle/{resolved_key}/1minute/{to_date}/{from_date}"
-            
+
         else:
             # Default fallback for live instruments and standard Indices
             url = f"https://api.upstox.com/v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}"
 
-
-        logger.debug(f"Making request to get historical data from {from_date} to {to_date}.")
+        logger.debug(
+            f"Making request to get historical data from {from_date} to {to_date}."
+        )
 
         # 4. Tightly Scoped Lock
         with api_lock:
@@ -563,23 +601,26 @@ class UpstoxClient:
         # 5. Negative Guard Clauses for Response Handling
         if not response:
             logger.warning("API Request Failed/Timeout.")
-            logger.warning(f"Empty Dataframe returned for {instrument_key} | from_date: {from_date} | to_date: {to_date}", stack_info=True)
+            logger.warning(
+                f"Empty Dataframe returned for {instrument_key} | from_date: {from_date} | to_date: {to_date}",
+                stack_info=True,
+            )
             return None
 
         candles = response.get("data", {}).get("candles", [])
-        
+
         if not candles:
-            logger.warning(f"Empty Dataframe returned for {instrument_key} | from_date: {from_date} | to_date: {to_date} | response: \n{response}", stack_info=True)
+            logger.warning(
+                f"Empty Dataframe returned for {instrument_key} | from_date: {from_date} | to_date: {to_date} | response: \n{response}",
+                stack_info=True,
+            )
             return pd.DataFrame()
 
         # 6. Build and Return DataFrame
         candles.reverse()
         return pd.DataFrame(
-            candles,
-            columns=["timestamp", "open", "high", "low", "close", "vol", "oi"]
+            candles, columns=["timestamp", "open", "high", "low", "close", "vol", "oi"]
         )
-
-
 
     def get_all_options(
         self,
@@ -693,21 +734,21 @@ class UpstoxClient:
             return response
 
     def get_trades_for_day(self):
-        
-        url = 'https://api.upstox.com/v2/order/trades/get-trades-for-day'
+
+        url = "https://api.upstox.com/v2/order/trades/get-trades-for-day"
         response = self._make_request("GET", url=url)
         return response["data"] if response else None
-    
+
     def get_order_history(self, order_id=""):
         """
         Get order history for the specified order.
         """
-        url = 'https://api.upstox.com/v2/order/history'
+        url = "https://api.upstox.com/v2/order/history"
         params = {"order_id": f"{order_id}"}
         response = self._make_request("GET", url=url, params=params)
-        
+
         return response["data"] if response else None
-        
+
     def get_order_details(self, order_id=""):
         """
         Get details of the specified order.
@@ -776,13 +817,13 @@ class UpstoxClient:
         feed_response.ParseFromString(buffer)
         return feed_response
 
-    async def  subscribe_ticks(
+    async def subscribe_ticks(
         self,
         buffer: asyncio.Queue,
-        instrument_key:Literal[
+        instrument_key: Literal[
             "NSE_INDEX|Nifty 50", "BSE_INDEX|SENSEX"
         ] = "NSE_INDEX|Nifty 50",
-        mode:Literal["ltpc","option_greeks","full","full_d30"]="full_d30",
+        mode: Literal["ltpc", "option_greeks", "full", "full_d30"] = "full_d30",
     ) -> Tick:
         """
         Get data steam of live market data for given instrument keys.
@@ -826,7 +867,9 @@ class UpstoxClient:
                     logger.info(data_dict)
                     market_status = (
                         True
-                        if data_dict["marketInfo"]["segmentStatus"][f"{instrument_key[0][:3]}_FO"]
+                        if data_dict["marketInfo"]["segmentStatus"][
+                            f"{instrument_key[0][:3]}_FO"
+                        ]
                         == "NORMAL_OPEN"
                         else False
                     )
@@ -847,7 +890,6 @@ class UpstoxClient:
                                 if "fullFeed" in feed_data
                             }
                             logger.info("Data ready")
-
 
                             if buffer.full():
                                 try:
@@ -887,7 +929,7 @@ class UpstoxClient:
                     while True:
                         logger.info("Starting portfolio updater")
                         message = await websocket.recv()
-                        data = json.loads(message)  
+                        data = json.loads(message)
                         logger.info(f"Received portfolio update: {data}")
                         await output.put(data)
             except Exception as e:
@@ -1086,7 +1128,7 @@ class UpstoxClient:
             )
             return None
 
-    def exchanges_status(self, exchange:Literal["BSE","NSE"]="NSE"):
+    def exchanges_status(self, exchange: Literal["BSE", "NSE"] = "NSE"):
         url = f"https://api.upstox.com/v2/market/status/{exchange}"
 
         response = self._make_request("GET", url)
@@ -1152,7 +1194,9 @@ class UpstoxClient:
                 stack_info=True,
             )
 
-    def is_exchange_holiday(self, date: datetime, exchange: Literal["NSE", "BSE"] = "NSE") -> bool:
+    def is_exchange_holiday(
+        self, date: datetime, exchange: Literal["NSE", "BSE"] = "NSE"
+    ) -> bool:
 
         if date.weekday() >= 5:
             return True
@@ -1166,41 +1210,51 @@ class UpstoxClient:
             if path.exists():
                 with open(path, "r") as file:
                     raw_data = json.load(file)
-                
+
                 _HOLIDAY_CACHE[year] = {
                     item["date"]: str(item.get("closed_exchanges", ""))
                     for item in raw_data
                 }
             else:
-                logger.info(f"Holiday file for {year} not found. Fetching full list from Upstox...")
+                logger.info(
+                    f"Holiday file for {year} not found. Fetching full list from Upstox..."
+                )
                 try:
-                    all_holidays = self.get_holidays() 
-                    year_data = [h for h in all_holidays if h.get("date", "").startswith(str(year))]
-                    
+                    all_holidays = self.get_holidays()
+                    year_data = [
+                        h
+                        for h in all_holidays
+                        if h.get("date", "").startswith(str(year))
+                    ]
+
                     if year_data:
                         path.parent.mkdir(parents=True, exist_ok=True)
                         with open(path, "w") as file:
                             json.dump(year_data, file, indent=4)
-                            
+
                         _HOLIDAY_CACHE[year] = {
                             item["date"]: str(item.get("closed_exchanges", ""))
                             for item in year_data
                         }
-                        logger.info(f"Successfully cached {len(year_data)} holidays for {year}.")
+                        logger.info(
+                            f"Successfully cached {len(year_data)} holidays for {year}."
+                        )
                     else:
                         # Safely handle Upstox returning no data for this year
                         logger.warning(f"Upstox returned no holidays for {year}.")
-                        _HOLIDAY_CACHE[year] = {} 
-                        
+                        _HOLIDAY_CACHE[year] = {}
+
                 except Exception as e:
-                    logger.exception(f"Failed to auto-download holiday list for {year}: {e}")
-                    _HOLIDAY_CACHE[year] = {} 
+                    logger.exception(
+                        f"Failed to auto-download holiday list for {year}: {e}"
+                    )
+                    _HOLIDAY_CACHE[year] = {}
 
         year_holidays = _HOLIDAY_CACHE[year]
-        
+
         if date_str in year_holidays and exchange in year_holidays[date_str]:
             return True
-            
+
         return False
 
     def get_sandbox_access_token(self):

@@ -109,18 +109,24 @@ class Funds:
             return
             
         self.update_from_json(client.get_funds())
-
-    def update_from_json(self, data: dict):
+    @classmethod
+    def update_from_json(cls, data: dict):
         """Instance method to update from live Upstox data, avoiding @classmethod bugs."""
         eq = data.get("equity", {})
-        self.adhoc_margin = eq.get("adhoc_margin", 0.0)
-        self.available_margin = eq.get("available_margin", 0.0)
-        self.exposure_margin = eq.get("exposure_margin", 0.0)
-        self.notional_cash = eq.get("notional_cash", 0.0)
-        self.payin_amount = eq.get("payin_amount", 0.0)
-        self.span_margin = eq.get("span_margin", 0.0)
-        self.used_margin = eq.get("used_margin", 0.0)
-        self.total = self.available_margin + self.used_margin
+      
+        available_margin = eq.get("available_margin", 0.0)
+        used_margin = eq.get("used_margin", 0.0)
+        return cls(
+        starting_capital = eq.get("available_margin", 0.0),
+        adhoc_margin = eq.get("adhoc_margin", 0.0),
+        available_margin = eq.get("available_margin", 0.0),
+        exposure_margin = eq.get("exposure_margin", 0.0),
+        notional_cash = eq.get("notional_cash", 0.0),
+        payin_amount = eq.get("payin_amount", 0.0),
+        span_margin = eq.get("span_margin", 0.0),
+        used_margin = eq.get("used_margin", 0.0),
+        total = available_margin + used_margin
+        )
 
 
 @dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))

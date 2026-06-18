@@ -1,29 +1,37 @@
 from collections import defaultdict
-import zmq
-import zmq.asyncio
+from dataclasses import asdict
 from functools import partial
-import datetime as dt
-import joblib
+from typing import Literal
+from copy import deepcopy
 from pathlib import Path
 import pandas_ta as ta
 from tqdm import tqdm
+import asyncio
+import datetime as dt
+import pandas as pd
+import logging
 import shutil
-from copy import deepcopy
+import json
+import zmq
 import sys
 
 ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+logger = logging.getLogger(__name__)
 
 # IMPORTING CUSTOM MODULES
-from core import anatomy as ana
-from core.methods import setup_cli
-from core.datatypes import Instrument, Trade, Portfolio, Bucket, Funds
+from core.datatypes import Instrument, Trade, Portfolio, Bucket, Funds, Tick
 from core.upstox_methods import UpstoxClient, DATA_DIR
-
+from core.methods import setup_cli, to_ist
+from core import anatomy as ana
 from ui import tui
 
-INSTRUMENT_CACHE = DATA_DIR / "cache" / "instruments_cache.joblib"
+ustox = UpstoxClient()
+SUPERT = "SUPERT"
+ADXR = "ADXR"
+MATRIX_CACHE_DIR = Path(__file__).resolve().parent / "data" / "cache" / "matrices"
+MATRIX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 print(
     "--------------------SIMULATOR--------------------".center(
@@ -31,8 +39,18 @@ print(
     )
 )
 
-ustox = UpstoxClient()
 
+BEST_PARAMS = {
+    'rsi_min': 47,
+    'adx_min': 61,
+    'use_ema': True,
+    'use_supertrend': False,
+    'req_active_slope': True,
+    'use_macd': False,
+    'bb_max_width': 0.014498753585377278,
+    'sl_atr': 1.5,
+    'target_atr': 8.0
+}
 
 # DEFINING BUY-SELL PARAMETERS
 def buy_signal(df, **kwargs):
@@ -258,7 +276,7 @@ def main():
     # GETTING INSTRUMENTS/BUCKETS TO BE SIMULATED
     args = setup_cli()
     # SETUP TRADER INSTANCE
-    capital: Funds = Funds.parse_funds_json(ustox.get_funds())
+    capital: Funds = Funds.update_from_json(ustox.get_funds(),)
     #capital: Funds = Funds(starting_capital=20000)
     prtf = Portfolio(funds=capital)
     feeder_queue = asyncio.Queue(maxsize=10)
@@ -347,16 +365,17 @@ def main():
         trader.buckets.append(bucket)
         break
     strat.add_indicators(
-        [
-            {"kind": "supertrend", "length": 14, "multiplier": 2.0},
-            {"kind": "adx", "length": 14},
-            {"kind": "atr", "length": 14},
-            {"kind": "ema", "length": 200},
-            {"kind": "rsi", "length": 14},
-            {"kind": "vwap"},
-        ]
+    [
+        {"kind": "supertrend", "length": 14, "multiplier": 2.0},
+        {"kind": "adx", "length": 14},
+        {"kind": "atr", "length": 14},
+        {"kind": "ema", "length": 200},
+        {"kind": "ema", "length": 50},
+        {"kind": "rsi", "length": 14},
+        {"kind": "macd", "fast": 12, "slow": 26, "signal": 9},  
+        {"kind": "bbands", "length": 20, "std": 2.0},           
+    ]
     )
-
     trader.strategy.buy_conditon = buy_signal
     trader.strategy.sell_condition = sell_signal
     trader.strategy.buy_constraints = buy_cons
