@@ -430,7 +430,6 @@ class Instrument:
                 ins.exchange = getattr(option, "exchange")
                 
                 end_date = current_day = ins.date
-                
                 current_lookback = lookback
                 
                 while current_lookback > 0:
