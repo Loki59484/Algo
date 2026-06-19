@@ -40,7 +40,7 @@ print(
 )
 
 
-BEST_PARAMS = {
+SNIPE_BEST_PARAMS = {
     'rsi_min': 47,
     'adx_min': 61,
     'use_ema': True,
@@ -50,6 +50,21 @@ BEST_PARAMS = {
     'bb_max_width': 0.014498753585377278,
     'sl_atr': 1.5,
     'target_atr': 8.0
+}
+
+SCALP_BEST_PARAMS = {
+    'rsi_min': 45,
+    'adx_min': 20,
+    'use_ema': True,
+    'use_supertrend': False,
+    'req_active_slope': False,
+    'use_macd': False,
+    'bb_max_width': 0.06897211941654376,
+    'sl_atr': 1.3,
+    'target_atr': 2.0,
+    'trailing_sl_atr': 0.3,
+    'max_daily_trades': 50,
+    'max_daily_profit': 18301.0
 }
 
 # DEFINING BUY-SELL PARAMETERS
@@ -112,7 +127,6 @@ async def executor(
 
     latest_tick = next(data.iloc[[-1]].itertuples())
     ui_socket: zmq.asyncio.Socket = kwargs.get("ui_socket", None)
-
     if ui_socket:
         last_row = data.iloc[-1]
         last_row["timestamp"] = last_row.name
@@ -128,29 +142,31 @@ async def executor(
                 if strategy.sell_constraints is not None
                 else True
             )
+
             if stoploss_hit or target_hit or sell_cons:
                 status = trader.broker.sell_order(
                     key=option.key,
-                    qty=trader.portfolio.report[-1].buy_qty,
+                    qty=trader.portfolio.report[-1].Buy_qty,
                     price=(
                         stoploss
                         if stoploss_hit
                         else target if target_hit else row.close
                     ),
                 )
+
                 if status == -1:
                     logger.error("Sell order not placed.")
                     return
 
                 report: Trade = trader.portfolio.report[-1]
-                report.sell_conditions = row._asdict()
-                report.sell_qty = report.buy_qty
-                report.sell_timestamp = row.Index
-                report.sell_price = stoploss if stoploss_hit else row.close
-                report.remark = "SL" if stoploss_hit else "T" if target_hit else "-"
-                report.movement = report.sell_price - report.buy_price
-                report.pnl = (report.sell_price * report.sell_qty) - (
-                    report.buy_price * report.buy_qty
+                report.Sell_conditions = row._asdict()
+                report.Sell_qty = report.Buy_qty
+                report.Sell_timestamp = row.Index
+                report.Sell_price = stoploss if stoploss_hit else row.close
+                report.Remark = "SL" if stoploss_hit else "T" if target_hit else "-"
+                report.Movement = report.Sell_price - report.Buy_price
+                report.PnL = (report.Sell_price * report.Sell_qty) - (
+                    report.Buy_price * report.Buy_qty
                 )
                 report.total = trader.portfolio.funds.total
                 bucket.open_position = None
@@ -193,13 +209,13 @@ async def executor(
             bucket.open_position.stoploss = None
             trader.portfolio.report.append(
                 Trade(
-                    trade_id=ord_id,
-                    instrument_key=option.key,
-                    buy_timestamp=row.Index,
-                    side=option.type,
-                    buy_price=row.close,
-                    buy_qty=qty,
-                    buy_conditions=row._asdict(),
+                    Trade_id=ord_id,
+                    Instrument_key=option.key,
+                    Buy_timestamp=row.Index,
+                    Side=option.type,
+                    Buy_price=row.close,
+                    Buy_qty=qty,
+                    Buy_conditions=row._asdict(),
                 )
             )
 
@@ -215,7 +231,7 @@ async def executor(
 
     if bucket.open_position is None:
         if latest_tick.buy_signal:
-            # Check which instrument this tick belongs to before buying!
+
             if latest_tick.key == call_option.key:
                 status = execute_buy(latest_tick, call_option, trader)
             elif latest_tick.key == put_option.key:
@@ -223,14 +239,12 @@ async def executor(
 
             if status == 1:
                 return
-        trader.portfolio.funds.settle()
     else:
         stoploss = bucket.open_position.stoploss
         if bucket.open_position.instrument_token == call_option.key:
             execute_sell(latest_tick, call_option, trader, stoploss)
         elif bucket.open_position.instrument_token == put_option.key:
             execute_sell(latest_tick, put_option, trader, stoploss)
-        trader.portfolio.funds.settle()
     
 
 # PROCESSOR TO HANDLE INCOMING TICKS
@@ -276,7 +290,7 @@ def main():
     # GETTING INSTRUMENTS/BUCKETS TO BE SIMULATED
     args = setup_cli()
     # SETUP TRADER INSTANCE
-    capital: Funds = Funds.update_from_json(ustox.get_funds(),)
+    capital: Funds = Funds.update_from_json(ustox.get_funds())
     #capital: Funds = Funds(starting_capital=20000)
     prtf = Portfolio(funds=capital)
     feeder_queue = asyncio.Queue(maxsize=10)
@@ -285,8 +299,8 @@ def main():
     trader = ana.Trader(
         portfolio=prtf,
         strategy=strat,
-        #broker=ana.SimBroker(portfolio=prtf),
-        broker=ana.LiveBroker(ustox),
+        broker=ana.SimBroker(portfolio=prtf),
+        #broker=ana.LiveBroker(ustox),
         datafeed=feeder_queue,
     )
 
@@ -324,8 +338,7 @@ def main():
                 (insts["instrument_key"] == best_ce)
                 | (insts["instrument_key"] == best_pe)
             ]
-
-            insts = Instrument.parse_options(client=ustox, options=options, lookback=2)
+            insts = Instrument.parse_options(client=ustox, options=options, lookback=2,is_expired=False)
 
         elif mode == "sim":
             files = []
@@ -343,7 +356,6 @@ def main():
                     )
             files.sort()
             insts = Instrument.load_multiple(client=ustox, source=files, lookback=2)
-
         insts_dict = {(item.key, item.date): item for item in insts}
         sim_dict = deepcopy(insts_dict)
         trader.add_instrument(insts_dict)
@@ -365,17 +377,16 @@ def main():
         trader.buckets.append(bucket)
         break
     strat.add_indicators(
-    [
-        {"kind": "supertrend", "length": 14, "multiplier": 2.0},
-        {"kind": "adx", "length": 14},
-        {"kind": "atr", "length": 14},
-        {"kind": "ema", "length": 200},
-        {"kind": "ema", "length": 50},
-        {"kind": "rsi", "length": 14},
-        {"kind": "macd", "fast": 12, "slow": 26, "signal": 9},  
-        {"kind": "bbands", "length": 20, "std": 2.0},           
-    ]
+        [
+            {"kind": "supertrend", "length": 14, "multiplier": 2.0},
+            {"kind": "adx", "length": 14},
+            {"kind": "atr", "length": 14},
+            {"kind": "ema", "length": 200},
+            {"kind": "rsi", "length": 14},
+            {"kind": "vwap"},
+        ]
     )
+
     trader.strategy.buy_conditon = buy_signal
     trader.strategy.sell_condition = sell_signal
     trader.strategy.buy_constraints = buy_cons

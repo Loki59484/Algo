@@ -30,7 +30,7 @@ if str(ROOT_DIR) not in sys.path:
 # IMPORTING CUSTOM MODULES
 from core.datatypes import Instrument, Portfolio, Position, Bucket, Order, Candle, Tick
 from core.upstox_methods import UpstoxClient, LOG_DIR
-
+from core.methods import to_ist
 
 logger = logging.getLogger(__name__)
 
@@ -321,7 +321,6 @@ class Strategy:
 
         if target.empty or not (self.indicators and self.indicators.ta):
             return None
-
         target.ta.study(self.indicators)
         
         return target

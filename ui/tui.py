@@ -38,8 +38,6 @@ if str(ROOT_DIR) not in sys.path:
 from core.datatypes import *
 from core.anatomy import Trader
 from core.upstox_methods import *
-from tools import planner
-
 os.environ["TEXTUAL_LOG"] = str(ROOT_DIR / "logs" / "logs.log")
 logger = logging.getLogger(__name__)
 
@@ -106,19 +104,6 @@ class TradingTUI(App):
                 yield Button('Refresh',compact= True,id='refresh_table')
                 yield tpd.DataFrameTable(id='recent-trades')
                 
-                with Vertical(id="analysis_console_container"):
-                    yield RichLog(id="analysis_log",
-                                    highlight=True,
-                                    markup=True,
-                                )
-                    yield Input(
-                        placeholder=">>>",
-                        id="analysis_input"
-                    )
-
-            with TabPane("Planner", id="planner"):
-                planner_plt = self.bucketattr[f'bucket_{idx}']['call_plt'] = PlotextPlot(id=f"call_plot_{idx}", classes='tickplots')
-                yield 
                 with Vertical(id="analysis_console_container"):
                     yield RichLog(id="analysis_log",
                                     highlight=True,
@@ -263,41 +248,53 @@ class TradingTUI(App):
             ts: list,
             row_keys: list,
         ):
-            if row.ltp == row.close_price:
+            # 1. Check if this tick belongs to a NEW minute or the CURRENT minute
+            is_new_candle = (len(ts) == 0) or (row.lts != ts[-1])
+
+            if is_new_candle:
+                # --- APPEND: Start a brand new candle ---
                 plotdata["Open"].append(row.open_price)
                 plotdata["High"].append(row.high_price)
                 plotdata["Low"].append(row.low_price)
-                plotdata["Close"].append(row.close_price)
-                plotdata["Close"].append(row.close_price)
+                plotdata["Close"].append(row.ltp) # The LTP is the current close
+                ts.append(row.lts) # Append the new timestamp
             else:
-                logger.info("Replacing ltp.")
-                plotdata["Open"][-1]=row.open_price
-                plotdata["High"][-1]=row.high_price
-                plotdata["Low"][-1]=row.low_price
-                plotdata["Close"][-1]=row.ltp
+                # --- UPDATE: "Breathe" the current candle ---
+                # Compare the tick's high/low with the current candle's high/low
+                plotdata["High"][-1] = max(plotdata["High"][-1], row.high_price)
+                plotdata["Low"][-1] = min(plotdata["Low"][-1], row.low_price)
+                plotdata["Close"][-1] = row.ltp
+                # We do NOT append to ts here, because we are still in the same minute
 
-            ts.append(row.lts)
             plt.clear_data()
-            plt.ylim(min(plotdata["Low"])-3 , max(plotdata["High"])+3)
+            
+            # Prevent plotting errors if data is empty
+            if not plotdata["High"] or not plotdata["Low"]:
+                return
+
+            # Dynamically set Y-axis limits
+            plt.ylim(min(plotdata["Low"]) - 3, max(plotdata["High"]) + 3)
 
             x_indices = list(range(0, len(plotdata["Open"]), 1))
 
             if len(x_indices) > 0:
                 plt.xlim(-1, len(x_indices))
 
-            row_key = plt.candlestick(
-                dates=x_indices,
-                data={
-                    "Open": list(plotdata["Open"]),
-                    "High": list(plotdata["High"]),
-                    "Low": list(plotdata["Low"]),
-                    "Close": list(plotdata["Close"]),
-                },
-                colors=["white", "gray"],
-            )
-            plt.xticks(x_indices[::5], list(ts)[::5])
-            row_keys.append(row_key)
-
+                row_key = plt.candlestick(
+                    dates=x_indices,
+                    data={
+                        "Open": list(plotdata["Open"]),
+                        "High": list(plotdata["High"]),
+                        "Low": list(plotdata["Low"]),
+                        "Close": list(plotdata["Close"]),
+                    },
+                    colors=["white", "gray"], 
+                )
+                
+                # Dynamically scale the X-axis ticks so they don't overlap
+                step = max(1, len(x_indices) // 5)
+                plt.xticks(x_indices[::step], list(ts)[::step])
+                row_keys.append(row_key)
         try:
             if isinstance(self.tick_buffer, str):
                 self.context = zmq.asyncio.Context()

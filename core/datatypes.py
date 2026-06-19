@@ -357,6 +357,7 @@ class Instrument:
         self.expiry = pd.to_datetime(expiry).date() if expiry else None
         self.exchange: Literal["NSE", "BSE"] = "NSE"
 
+
     def load_previous(
         self, client, from_date: datetime, to_date: datetime, isexpired: bool = True
     ):
@@ -368,7 +369,6 @@ class Instrument:
 
         CACHE_FILE = CACHE_DIR / f"{self.key}_{from_date}_{to_date}.parquet"
         data = None
-
         if CACHE_FILE.exists() and CACHE_FILE.stat().st_size > 0:
 
             data = pd.read_parquet(CACHE_FILE)
@@ -395,8 +395,7 @@ class Instrument:
 
     @classmethod
     def parse_options(
-        cls, client, options: pd.DataFrame, lookback: int = 0
-    ) -> list[Instrument]:
+        cls, client, options: pd.DataFrame, lookback: int = 0, is_expired:bool = False) -> list[Instrument]:
         """
         Parses a DataFrame containing options data into different Instrument class objects.
 
@@ -420,52 +419,64 @@ class Instrument:
                 leave=False,
                 total=len(options),
             ):
-                data_dfs = []
-                ins = cls(
-                    instrument_key=option.instrument_key,
-                    expiry=option.expiry,
-                )
+                data = client.get_historical(dtype='intraday',instrument_key=option.instrument_key)
+                data_dfs = [data]
+                ins = cls(instrument_key=option.instrument_key,expiry=option.expiry)
                 ins.lot_size = getattr(option, "lot_size")
                 ins.freeze_qty = getattr(option, "freeze_quantity")
                 ins.type = getattr(option, "instrument_type")
                 ins.strike_price = getattr(option, "strike_price")
                 ins.date = getattr(option, "date", datetime.today().date())
                 ins.exchange = getattr(option, "exchange")
-                end_date = current_day
-
-                while lookback > 0:
+                
+                end_date = current_day = ins.date
+                
+                current_lookback = lookback
+                
+                while current_lookback > 0:
                     if client.is_exchange_holiday(current_day, ins.exchange):
                         current_day -= timedelta(days=1)
                     else:
-                        lookback -= 1
+                        current_lookback -= 1
                         current_day -= timedelta(days=1)
 
                 chunk_start = current_day
-
+                
                 while chunk_start <= end_date:
-                    chunk_end = min(
-                        chunk_start + relativedelta(months=1) - timedelta(days=1),
-                        end_date,
-                    )
+                    try:
+                        chunk_end = min(
+                            chunk_start + relativedelta(months=1) - timedelta(days=1),
+                            end_date,
+                        )
 
-                    logger.info(
-                        f"Fetching historical chunk: {chunk_start} to {chunk_end}"
-                    )
+                        logger.info(
+                            f"Fetching historical chunk: {chunk_start} to {chunk_end}"
+                        )
 
-                    # Fetch the chunk
-                    chunk_data = ins.load_previous(
-                        client, from_date=chunk_start, to_date=chunk_end, isexpired=True
-                    )
-
-                    data_dfs.append(chunk_data)
-                    # Shift the start date for the next loop iteration
-                    chunk_start = chunk_end + timedelta(days=1)
+                        # Fetch the chunk
+                        chunk_data = ins.load_previous(client, from_date=chunk_start, to_date=chunk_end, isexpired=is_expired)
+                        data_dfs.append(chunk_data)
+                        
+                    except Exception as e:
+                        logger.exception(f"Exception while loading previous days. \n{e}")
+                    finally:
+                        # CRITICAL FIX 1: Safely shift the start date even if a network error occurs
+                        # otherwise this becomes a permanent infinite loop!
+                        chunk_start = chunk_end + timedelta(days=1)
+                    
 
                 data_dfs.reverse()
                 if not data_dfs:
                     continue
-                data_dfs = [df for df in data_dfs if not df.empty]
+                
+                # CRITICAL FIX 2: Filter out NoneTypes BEFORE checking .empty
+                data_dfs = [df for df in data_dfs if df is not None and not df.empty]
+                
+                if not data_dfs:
+                    continue
+                    
                 data = pd.concat(data_dfs, ignore_index=True)
+                
                 if not data.empty:
                     clean_data = data.copy()
                     clean_data[["open", "high", "low", "close"]] = clean_data[
@@ -489,6 +500,8 @@ class Instrument:
                     ]
                     ins.historical_candles.extend(candles)
                     parsed_options.append(ins)
+                
+                    
 
         except Exception as e:
             logger.info(f"Exception while parsing options: \n{e}")
@@ -628,7 +641,6 @@ class Instrument:
                 f"No historical data available for {self.key}. "
                 f"Contract likely was not listed on the exchange during this lookback window."
             )
-            breakpoint()
             return pd.DataFrame()  # Explicitly return an empty DataFrame to protect downstream code
 
         data = pd.concat(data_dfs, ignore_index=True)
