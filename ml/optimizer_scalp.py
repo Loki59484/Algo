@@ -53,7 +53,7 @@ BB_WIDTH = global_df['BB_width'].values
 # =====================================================================
 # 1.5 DYNAMIC LOT SIZE & TAX CALCULATOR
 # =====================================================================
-SLIPPAGE = 0.5  # Constant Spread slippage applied to market orders
+SLIPPAGE = 0.5  # Constant Spread slippage applied to market orders (Stoplosses)
 
 def get_nifty_lot_size(trade_date):
     if trade_date >= datetime.date(2026, 1, 1): return 65
@@ -119,13 +119,24 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
             prices_high, prices_low, prices_close = PE_HIGH, PE_LOW, PE_CLOSE
             prices_next_open = PE_NEXT_OPEN
 
-        # LATENCY ENTRY: Enter exactly on the NEXT candle's open + spread penalty
-        # (Entries are still Market Orders catching the breakout)
-        entry_price = prices_next_open[start_idx] + SLIPPAGE
+        # -------------------------------------------------------------
+        # THE FIX: IOC LIMIT ORDER ENTRY SIMULATION
+        # -------------------------------------------------------------
+        limit_price = prices_close[start_idx]
+        next_open = prices_next_open[start_idx]
+
+        # If the market has already gapped above our limit price on the next tick, 
+        # the IOC order cancels. We miss the trade entirely to avoid slippage.
+        if next_open > limit_price:
+            continue
+
+        # If it opens at or below our limit, we are filled at our limit price (zero entry slippage).
+        entry_price = limit_price
+        
         highest_seen = entry_price
         current_lot_size = get_nifty_lot_size(trade_date)
 
-        # Because we entered on next_open, execution starts on the NEXT candle
+        # Because we evaluated on next_open, execution tracking starts on the NEXT candle
         curr_idx = start_idx + 1
         exit_price = 0.0
 
@@ -136,8 +147,7 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
             # --- THE PESSIMISTIC FLIP (Safety First) ---
             # Check Stoploss BEFORE Target to simulate the absolute worst-case scenario.
             if low <= sl:
-                # REVERTED TO MARKET ORDER: Safest way to guarantee an exit. 
-                # We deduct SLIPPAGE because we are hitting the bid.
+                # MARKET ORDER STOPLOSS: Deduct SLIPPAGE because we hit the bid.
                 exit_price = sl - SLIPPAGE 
                 last_exit_idx = curr_idx
                 break
@@ -171,25 +181,25 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
 # 3. THE OPTUNA OBJECTIVE
 # =====================================================================
 def objective(trial):
-    rsi_min = trial.suggest_int("rsi_min", 50, 70)  
-    adx_min = trial.suggest_int("adx_min", 25, 45)
+    rsi_min = trial.suggest_int("rsi_min", 50, 70, step=5)  
+    adx_min = trial.suggest_int("adx_min", 25, 45, step=5)
     
-    # NEW: Crash/Parabolic Prevention. Do not enter if ADX is dangerously high!
-    adx_max = trial.suggest_int("adx_max", 50, 80)
+    # Crash/Parabolic Prevention. Do not enter if ADX is dangerously high!
+    adx_max = trial.suggest_int("adx_max", 50, 80, step=5)
     
     use_ema_filter = trial.suggest_categorical("use_ema", [True, False])
     use_supertrend_filter = trial.suggest_categorical("use_supertrend", [True, False])
     req_active_slope = trial.suggest_categorical("req_active_slope", [True, False])
     use_macd_filter = trial.suggest_categorical("use_macd", [True, False])
     
-    bb_max_width = trial.suggest_float("bb_max_width", 0.01, 0.06, step=0.005)
+    bb_max_width = trial.suggest_float("bb_max_width", 0.01, 0.06, step=0.01)
     
     sl_atr = trial.suggest_float("sl_atr", 0.8, 2.0, step=0.2)
-    target_atr = trial.suggest_float("target_atr", 2.0, 6.0, step=0.2)
-    trailing_sl_atr = trial.suggest_float("trailing_sl_atr", 0.5, 2.0, step=0.2)
+    target_atr = trial.suggest_float("target_atr", 2.0, 6.0, step=0.5)
+    trailing_sl_atr = trial.suggest_float("trailing_sl_atr", 0.5, 2.0, step=0.5)
     
-    max_daily_trades = trial.suggest_int("max_daily_trades", 2, 20)
-    max_daily_profit = trial.suggest_int("max_daily_profit", 3000, 15000) 
+    max_daily_trades = trial.suggest_int("max_daily_trades", 2, 4)
+    max_daily_profit = trial.suggest_int("max_daily_profit", 3000, 15000, step=1000) 
     
     # Applied ADX Ceiling Protection
     ce_mask = (global_df['RSI'] > rsi_min) & (global_df['ADX'] > adx_min) & (global_df['ADX'] < adx_max)
@@ -217,10 +227,11 @@ def objective(trial):
     if len(ce_indices) == 0 and len(pe_indices) == 0:
         return -99999.0
 
+    # Build Arrays - Using IOC Limit Entry (Zero Slippage, Fill = Close Price)
     ce_sl, ce_tg, ce_trail = [], [], []
     if len(ce_indices) > 0:
         ce_atrs = global_df['ce_ATR'].values[ce_indices]
-        ce_fills = CE_NEXT_OPEN[ce_indices] + SLIPPAGE
+        ce_fills = CE_CLOSE[ce_indices]  # We intend to fill exactly at our limit price
         ce_sl = ce_fills - (ce_atrs * sl_atr)
         ce_tg = ce_fills + (ce_atrs * target_atr)
         ce_trail = ce_atrs * trailing_sl_atr
@@ -228,7 +239,7 @@ def objective(trial):
     pe_sl, pe_tg, pe_trail = [], [], []
     if len(pe_indices) > 0:
         pe_atrs = global_df['pe_ATR'].values[pe_indices]
-        pe_fills = PE_NEXT_OPEN[pe_indices] + SLIPPAGE
+        pe_fills = PE_CLOSE[pe_indices]  # We intend to fill exactly at our limit price
         pe_sl = pe_fills - (pe_atrs * sl_atr)
         pe_tg = pe_fills + (pe_atrs * target_atr)
         pe_trail = pe_atrs * trailing_sl_atr
@@ -262,7 +273,7 @@ if __name__ == "__main__":
     try:
         study.optimize(
             objective, 
-            n_trials=2500, 
+            n_trials=1500, 
             n_jobs=24, 
             show_progress_bar=True
         )

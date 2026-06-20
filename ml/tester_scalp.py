@@ -17,18 +17,19 @@ ustox = UpstoxClient()
 # 1. HARDCODE YOUR BEST PARAMETERS HERE
 # =====================================================================
 BEST_PARAMS = {
-    "rsi_min": 45,
-    "adx_min": 20,
+    "rsi_min": 66,
+    "adx_min": 45,
+    "adx_max" : 74,
     "use_ema": True,
     "use_supertrend": False,
     "req_active_slope": False,
     "use_macd": False,
-    "bb_max_width": 0.06897211941654376,
-    "sl_atr": 1.3,
-    "target_atr": 2.0,
-    "trailing_sl_atr": 0.3,
-    "max_daily_trades": 50,
-    "max_daily_profit": 18301.0,
+    "bb_max_width": 0.035,
+    "sl_atr": 2,
+    "target_atr": 6,
+    "trailing_sl_atr": 1.7,
+    "max_daily_trades": 3,
+    "max_daily_profit": 8458,
 }
 
 if not TESTING_DATA_PATH.exists():
@@ -54,7 +55,7 @@ PE_NEXT_OPEN = df['pe_next_open'].values  # NEW: Latency simulator
 
 # Extract Trend & Filter arrays
 SPOT_CLOSE = df['close'].values
-EMA_200 = df['EMA'].values  
+EMA_200 = df['EMA_200'].values  
 SUPERTD = df['SUPERTd'].values
 SUPERT_SLOPE = df['SUPERT_slope'].values
 MACD = df['MACD'].values
@@ -202,8 +203,8 @@ def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce
 print("\nApplying Unified Chronological Scalping rules to unseen data...")
 
 # Build Masks
-ce_mask = (df['RSI'] > BEST_PARAMS['rsi_min']) & (df['ADX'] > BEST_PARAMS['adx_min'])
-pe_mask = (df['RSI'] < (100 - BEST_PARAMS['rsi_min'])) & (df['ADX'] > BEST_PARAMS['adx_min'])
+ce_mask = (df['RSI'] > BEST_PARAMS['rsi_min']) & (df['ADX'] > BEST_PARAMS['adx_min']) & (df['ADX'] < BEST_PARAMS['adx_max'])
+pe_mask = (df['RSI'] < (100 - BEST_PARAMS['rsi_min'])) & (df['ADX'] > BEST_PARAMS['adx_min']) & (df['ADX'] < BEST_PARAMS['adx_max'])
 
 if BEST_PARAMS['use_ema']:
     ce_mask &= (SPOT_CLOSE > EMA_200)

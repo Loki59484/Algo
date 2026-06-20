@@ -60,9 +60,9 @@ BB_WIDTH = df['BB_width'].values
 # 3. HELPER FUNCTIONS
 # =====================================================================
 def get_nifty_lot_size(trade_date):
-    if trade_date >= pd.Timestamp("2026-01-01").date(): return 65
-    elif trade_date >= pd.Timestamp("2024-11-20").date(): return 75
-    else: return 25
+    if trade_date >= pd.Timestamp("2026-01-01").date(): return 65 * 10
+    elif trade_date >= pd.Timestamp("2024-11-20").date(): return 75 * 8
+    else: return 25 * 20
 
 def calculate_options_charges(buy_price, sell_price, qty):
     buy_value = buy_price * qty
