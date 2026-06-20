@@ -81,7 +81,6 @@ def process_bucket(bucket: Bucket, trader: ana.Trader, master_list: list,  **kwa
         "DMN_14": "DMN",
         "ATRr_14": "ATR",
         "RSI_14": "RSI",
-        "EMA_200": "EMA",
         "MACD_12_26_9": "MACD",            
         "MACDs_12_26_9": "MACD_signal",    
         "BBL_20_2.0_2.0": "BBL",               
