@@ -35,15 +35,15 @@ DATES = global_df.index.date
 CE_HIGH = global_df['ce_high'].values
 CE_LOW = global_df['ce_low'].values
 CE_CLOSE = global_df['ce_close'].values
-CE_NEXT_OPEN = global_df['ce_next_open'].values  # NEW: Latency simulator
+CE_NEXT_OPEN = global_df['ce_next_open'].values  # Latency simulator
 
 PE_HIGH = global_df['pe_high'].values
 PE_LOW = global_df['pe_low'].values
 PE_CLOSE = global_df['pe_close'].values
-PE_NEXT_OPEN = global_df['pe_next_open'].values  # NEW: Latency simulator
+PE_NEXT_OPEN = global_df['pe_next_open'].values  # Latency simulator
 
 SPOT_CLOSE = global_df['close'].values
-EMA_200 = global_df['EMA'].values
+EMA_200 = global_df['EMA_200'].values
 SUPERTD = global_df['SUPERTd'].values
 SUPERT_SLOPE = global_df['SUPERT_slope'].values
 MACD = global_df['MACD'].values
@@ -165,23 +165,27 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
 # 3. THE OPTUNA OBJECTIVE
 # =====================================================================
 def objective(trial):
-    rsi_min = trial.suggest_int("rsi_min", 45, 65)
-    adx_min = trial.suggest_int("adx_min", 20, 50)
+    # THE OVERFIT FIX: Use strict `step` increments to force the AI 
+    # to find broad, generalizable patterns instead of memorizing data.
+    
+    rsi_min = trial.suggest_int("rsi_min", 50, 70, step=5)  # Can only be 50, 55, 60, 65, 70
+    adx_min = trial.suggest_int("adx_min", 25, 45, step=5)
     
     use_ema_filter = trial.suggest_categorical("use_ema", [True, False])
     use_supertrend_filter = trial.suggest_categorical("use_supertrend", [True, False])
     req_active_slope = trial.suggest_categorical("req_active_slope", [True, False])
     use_macd_filter = trial.suggest_categorical("use_macd", [True, False])
     
-    bb_max_width = trial.suggest_float("bb_max_width", 0.015, 0.07)
+    # Coarse steps prevent insane 15-decimal curve fitting
+    bb_max_width = trial.suggest_float("bb_max_width", 0.01, 0.06, step=0.01)
     
-    sl_atr = trial.suggest_float("sl_atr", 0.5, 1.5, step=0.1)
-    target_atr = trial.suggest_float("target_atr", 0.5, 2.0, step=0.1)
-    trailing_sl_atr = trial.suggest_float("trailing_sl_atr", 0.3, 1.5, step=0.1)
+    sl_atr = trial.suggest_float("sl_atr", 0.8, 2.0, step=0.2)
+    target_atr = trial.suggest_float("target_atr", 2.0, 6.0, step=0.5)
+    trailing_sl_atr = trial.suggest_float("trailing_sl_atr", 0.5, 2.0, step=0.5)
     
-    # Searching for the exact trade limit and profit ceiling
-    max_daily_trades = trial.suggest_int("max_daily_trades", 1, 50)
-    max_daily_profit = trial.suggest_int("max_daily_profit", 1000, 20000) 
+    # Allow 2 to 4 trades to ensure statistical significance over noise
+    max_daily_trades = trial.suggest_int("max_daily_trades", 2, 4)
+    max_daily_profit = trial.suggest_int("max_daily_profit", 3000, 15000, step=1000) 
     
     ce_mask = (global_df['RSI'] > rsi_min) & (global_df['ADX'] > adx_min)
     pe_mask = (global_df['RSI'] < (100 - rsi_min)) & (global_df['ADX'] > adx_min)
@@ -208,7 +212,7 @@ def objective(trial):
     if len(ce_indices) == 0 and len(pe_indices) == 0:
         return -99999.0
 
-    # Build Arrays - Using REAL fill price (Next Open + Slippage) to set targets/stops
+    # Build Arrays - Using REAL fill price (Next Open + Slippage)
     ce_sl, ce_tg, ce_trail = [], [], []
     if len(ce_indices) > 0:
         ce_atrs = global_df['ce_ATR'].values[ce_indices]
@@ -238,10 +242,10 @@ def objective(trial):
 # =====================================================================
 if __name__ == "__main__":
     
-    study_name = "nifty_scalp_unified"
-    storage_name = "sqlite:///optuna_scalp_unified.db"
+    study_name = "nifty_scalp_robust"
+    storage_name = "sqlite:///optuna_scalp_robust.db" # New DB to avoid old overfit data
     
-    print(f"Igniting Unified Optuna Scalp Database: {storage_name}")
+    print(f"Igniting Robust Optuna Scalp Database: {storage_name}")
     
     study = optuna.create_study(
         study_name=study_name, 
@@ -250,12 +254,13 @@ if __name__ == "__main__":
         load_if_exists=True 
     )
     
-    print("Firing up parallel CPU cores for pure chronological optimization...")
+    print("Firing up parallel CPU cores for robust chronological optimization...")
     
     try:
+        # Reduced trials since the search space is now much smaller and discretized
         study.optimize(
             objective, 
-            n_trials=4000, 
+            n_trials=1500, 
             n_jobs=24, 
             show_progress_bar=True
         )
@@ -263,9 +268,9 @@ if __name__ == "__main__":
         print("\nOptimization Stopped Early by User.")
         
     print("\n" + "="*50)
-    print("🏆 UNIFIED SCALP OPTIMIZATION COMPLETE 🏆")
+    print("🏆 ROBUST SCALP OPTIMIZATION COMPLETE 🏆")
     print("="*50)
     print(f"Absolute Best Net PnL : ₹{study.best_value:,.2f}")
-    print("Perfect Parameter Combination:")
+    print("Generalizable Parameter Combination:")
     for key, value in study.best_params.items():
         print(f"  --> {key}: {value}")

@@ -53,7 +53,7 @@ SNIPE_BEST_PARAMS = {
     "target_atr": 8.0,
     "trailing_sl_atr": 1.5,
 }
-
+"""
 SCALP_BEST_PARAMS = {
     "rsi_min": 45,
     "adx_min": 20,
@@ -67,6 +67,22 @@ SCALP_BEST_PARAMS = {
     "trailing_sl_atr": 0.3,
     "max_daily_trades": 50,
     "max_daily_profit": 18301.0,
+}
+"""
+
+SCALP_BEST_PARAMS = {
+    'rsi_min': 57,
+    'adx_min': 34,
+    'use_ema': True,
+    'use_supertrend': False,
+    'req_active_slope': False,
+    'use_macd': False,
+    'bb_max_width': 0.04802486645337926,
+    'sl_atr': 1.0,
+    'target_atr': 4.5,
+    'trailing_sl_atr': 1.5,
+    'max_daily_trades': 10,
+    'max_daily_profit': 28014,
 }
 
 # =====================================================================
