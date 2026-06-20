@@ -48,7 +48,7 @@ class DatatypeBase:
 
 @dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
 class Funds:
-    starting_capital: float  
+    starting_capital: float
     pnl: float = 0.0
     total: float = 0.0
     used_margin: float = 0.0
@@ -67,39 +67,47 @@ class Funds:
         """Called by the broker when an asset is sold."""
         self.total += amount
         self.used_margin = 0.0  # Clean reset. Open position is closed.
-        
+
         # UPSTOX T+1 RULE: Realized profits are locked until settlement.
         # We cap the 'available margin' to starting_capital, but subtract any active used_margin.
         realized_equity = self.total + self.used_margin
-        self.available_margin = min(realized_equity, self.starting_capital) - self.used_margin
-        
+        self.available_margin = (
+            min(realized_equity, self.starting_capital) - self.used_margin
+        )
+
         self.pnl = self.total - self.starting_capital
 
     def debit(self, amount: float):
         """Called by the broker when an asset is bought."""
         if amount > self.available_margin:
-            logger.error(f"Insufficient funds. Required: {amount}, Available: {self.available_margin}")
+            logger.error(
+                f"Insufficient funds. Required: {amount}, Available: {self.available_margin}"
+            )
             return -1
-            
+
         self.total -= amount
         self.used_margin += amount
-        
+
         # Deduct the bought amount from available margin safely while respecting the T+1 cap
         realized_equity = self.total + self.used_margin
-        self.available_margin = min(realized_equity, self.starting_capital) - self.used_margin
-        
+        self.available_margin = (
+            min(realized_equity, self.starting_capital) - self.used_margin
+        )
+
         self.pnl = self.total - self.starting_capital
 
     def settle(self, simulate: bool = True, client=None):
         """Called at the end of the day to finalize the ledger."""
         if not simulate and client is None:
-            logger.error("A client instance of `UpstoxClient` is required if not simulating.")
+            logger.error(
+                "A client instance of `UpstoxClient` is required if not simulating."
+            )
             return
-            
+
         logger.info(
             f"Day settled | Starting: {self.starting_capital} | End Total: {self.total} | PnL: {self.pnl}"
         )
-        
+
         if simulate:
             # T+1 SETTLEMENT: Today's profits are officially released into tomorrow's starting capital!
             self.starting_capital = self.total
@@ -107,25 +115,26 @@ class Funds:
             self.used_margin = 0.0
             self.pnl = 0.0
             return
-            
+
         self.update_from_json(client.get_funds())
+
     @classmethod
     def update_from_json(cls, data: dict):
         """Instance method to update from live Upstox data, avoiding @classmethod bugs."""
         eq = data.get("equity", {})
-      
+
         available_margin = eq.get("available_margin", 0.0)
         used_margin = eq.get("used_margin", 0.0)
         return cls(
-        starting_capital = eq.get("available_margin", 0.0),
-        adhoc_margin = eq.get("adhoc_margin", 0.0),
-        available_margin = eq.get("available_margin", 0.0),
-        exposure_margin = eq.get("exposure_margin", 0.0),
-        notional_cash = eq.get("notional_cash", 0.0),
-        payin_amount = eq.get("payin_amount", 0.0),
-        span_margin = eq.get("span_margin", 0.0),
-        used_margin = eq.get("used_margin", 0.0),
-        total = available_margin + used_margin
+            starting_capital=eq.get("available_margin", 0.0),
+            adhoc_margin=eq.get("adhoc_margin", 0.0),
+            available_margin=eq.get("available_margin", 0.0),
+            exposure_margin=eq.get("exposure_margin", 0.0),
+            notional_cash=eq.get("notional_cash", 0.0),
+            payin_amount=eq.get("payin_amount", 0.0),
+            span_margin=eq.get("span_margin", 0.0),
+            used_margin=eq.get("used_margin", 0.0),
+            total=available_margin + used_margin,
         )
 
 
@@ -343,6 +352,8 @@ class Instrument:
         instrument_key: str,
         date: str | datetime = None,
         expiry: str | datetime = None,
+        data: pd.DataFrame | None = None,
+        instrument_type: str | None = None,
     ):
 
         self.lot_size: int = 0
@@ -350,16 +361,19 @@ class Instrument:
         self.interval: str = "1"
         self.unit: str = "minute"
         self.freeze_qty: float = 0.0
-        self.type: str | None = None
+        self.type: str | None = instrument_type
         self.strike_price: float = 0.0
         self.date = pd.to_datetime(date).date() if date else None
-        self.historical_candles: deque[Candle] = deque(maxlen=100000)
+        self.historical_candles: deque[Candle] = (
+            deque(iterable=self.df_to_candles(data), maxlen=100000)
+            if data is not None
+            else deque(maxlen=100000)
+        )
         self.expiry = pd.to_datetime(expiry).date() if expiry else None
         self.exchange: Literal["NSE", "BSE"] = "NSE"
 
-
     def load_previous(
-        self, client, from_date: datetime, to_date: datetime, isexpired: bool = True
+        self, client, from_date: datetime, to_date: datetime, is_expired: bool = True
     ):
         from core.upstox_methods import DATA_DIR
         from tools.download_historical import download_cache
@@ -376,7 +390,7 @@ class Instrument:
                 f"Data loaded for {self.key} | Date {from_date} - {to_date} from cache."
             )
         else:
-            if not isexpired:
+            if not is_expired:
                 logger.info("Loading historical data from Upstox.")
                 data = client.get_historical(
                     instrument_key=self.key, from_date=from_date, to_date=to_date
@@ -385,7 +399,14 @@ class Instrument:
                 logger.info(
                     f"Saving cache for expired instrument from Upstox at {CACHE_FILE}."
                 )
-                data = download_cache(self.key,is_expired=True,expiry=self.expiry,from_date=from_date,to_date=to_date,out_path=CACHE_FILE)
+                data = download_cache(
+                    self.key,
+                    is_expired=True,
+                    expiry=self.expiry,
+                    from_date=from_date,
+                    to_date=to_date,
+                    out_path=CACHE_FILE,
+                )
         if data is None or data.empty:
             logger.warning(
                 f"Could not load previous trading date data | Key : {self.key} | Date = {from_date}"
@@ -395,22 +416,8 @@ class Instrument:
 
     @classmethod
     def parse_options(
-        cls, client, options: pd.DataFrame, lookback: int = 0, is_expired:bool = False) -> list[Instrument]:
-        """
-        Parses a DataFrame containing options data into different Instrument class objects.
-
-        Parameters
-        ----------
-        options : pd.DataFrame
-            DataFrame containing options data where option contains fields provided directly by Upstox API.
-        lookback : int, optional
-            Number of previous days for which data is to be loaded, by default 0
-
-        Returns
-        -------
-        list[Instrument]
-        """
-
+        cls, client, options: pd.DataFrame, lookback: int = 0, is_expired: bool = False
+    ) -> list["Instrument"]:
         parsed_options = []
         try:
             for option in tqdm(
@@ -419,91 +426,41 @@ class Instrument:
                 leave=False,
                 total=len(options),
             ):
-                data = client.get_historical(dtype='intraday',instrument_key=option.instrument_key)
-                data_dfs = [data]
-                ins = cls(instrument_key=option.instrument_key,expiry=option.expiry)
+
+                today_data = client.get_historical(
+                    dtype="intraday", instrument_key=option.instrument_key
+                )
+
+                ins = cls(instrument_key=option.instrument_key, expiry=option.expiry)
                 ins.lot_size = getattr(option, "lot_size")
                 ins.freeze_qty = getattr(option, "freeze_quantity")
                 ins.type = getattr(option, "instrument_type")
                 ins.strike_price = getattr(option, "strike_price")
                 ins.date = getattr(option, "date", datetime.today().date())
-                ins.exchange = getattr(option, "exchange")
-                
-                end_date = current_day = ins.date
-                current_lookback = lookback
-                
-                while current_lookback > 0:
-                    if client.is_exchange_holiday(current_day, ins.exchange):
-                        current_day -= timedelta(days=1)
-                    else:
-                        current_lookback -= 1
-                        current_day -= timedelta(days=1)
+                ins.exchange = getattr(option, "exchange", "NSE")
 
-                chunk_start = current_day
-                
-                while chunk_start <= end_date:
-                    try:
-                        chunk_end = min(
-                            chunk_start + relativedelta(months=1) - timedelta(days=1),
-                            end_date,
-                        )
-
-                        logger.info(
-                            f"Fetching historical chunk: {chunk_start} to {chunk_end}"
-                        )
-
-                        # Fetch the chunk
-                        chunk_data = ins.load_previous(client, from_date=chunk_start, to_date=chunk_end, isexpired=is_expired)
-                        data_dfs.append(chunk_data)
-                        
-                    except Exception as e:
-                        logger.exception(f"Exception while loading previous days. \n{e}")
-                    finally:
-                        # CRITICAL FIX 1: Safely shift the start date even if a network error occurs
-                        # otherwise this becomes a permanent infinite loop!
-                        chunk_start = chunk_end + timedelta(days=1)
-                    
-
-                data_dfs.reverse()
-                if not data_dfs:
-                    continue
-                
-                # CRITICAL FIX 2: Filter out NoneTypes BEFORE checking .empty
-                data_dfs = [df for df in data_dfs if df is not None and not df.empty]
-                
-                if not data_dfs:
-                    continue
-                    
-                data = pd.concat(data_dfs, ignore_index=True)
-                
-                if not data.empty:
-                    clean_data = data.copy()
-                    clean_data[["open", "high", "low", "close"]] = clean_data[
-                        ["open", "high", "low", "close"]
-                    ].ffill()
-                    clean_data["vol"] = (
-                        pd.to_numeric(clean_data["vol"], errors="coerce")
-                        .fillna(0)
-                        .astype(float)
+                data_dfs = []
+                if lookback > 0:
+                    hist_data = ins.load_historical_df(
+                        client, lookback, is_expired=is_expired
                     )
-                    candles = [
-                        Candle(timestamp=t, open=o, high=h, low=l, close=c, volume=v)
-                        for t, o, h, l, c, v in zip(
-                            to_ist(clean_data["timestamp"]),
-                            clean_data["open"],
-                            clean_data["high"],
-                            clean_data["low"],
-                            clean_data["close"],
-                            clean_data["vol"],
-                        )
-                    ]
-                    ins.historical_candles.extend(candles)
-                    parsed_options.append(ins)
-                
-                    
+                    if not hist_data.empty:
+                        data_dfs.append(hist_data)
+
+                if today_data is not None and not today_data.empty:
+                    data_dfs.append(today_data)
+
+                if not data_dfs:
+                    continue
+
+                # 4. Concatenate and clean
+                clean_data = pd.concat(data_dfs, ignore_index=True)
+                candles = ins.df_to_candles(clean_data)
+                ins.historical_candles.extend(candles)
+                parsed_options.append(ins)
 
         except Exception as e:
-            logger.info(f"Exception while parsing options: \n{e}")
+            logger.exception(f"Exception while parsing options: \n{e}")
         return parsed_options
 
     @classmethod
@@ -581,7 +538,6 @@ class Instrument:
         logger.debug("Instruments loaded successfully.")
         return loaded_instruments
 
-
     def _calculate_lookback_dates(self, client, lookback):
         """Walks backwards to calculate the start and end dates based on holidays."""
         end_date = self.date
@@ -593,37 +549,36 @@ class Instrument:
                 days_found += 1
             if days_found < lookback:
                 start_date -= timedelta(days=1)
-                
-        return start_date, end_date
 
+        return start_date, end_date
 
     def _build_date_chunks(self, start_date, end_date):
         """Pre-calculates monthly chunk boundaries to avoid API batch restrictions."""
-        
+
         date_chunks = []
         curr_start = start_date
-        
+
         while curr_start <= end_date:
-            curr_end = min(curr_start + relativedelta(months=1) - timedelta(days=1), end_date)
+            curr_end = min(
+                curr_start + relativedelta(months=1) - timedelta(days=1), end_date
+            )
             date_chunks.append((curr_start, curr_end))
             curr_start = curr_end + timedelta(days=1)
-        
+
         return date_chunks
 
-
-    def _fetch_historical_chunks(self, client, date_chunks):
+    def _fetch_historical_chunks(self, client, date_chunks, is_expired):
         """Queries the upstream API for each chunk, silently ignoring non-existent periods."""
         historical_dfs = []
         for c_start, c_end in date_chunks:
             chunk_data = self.load_previous(
-                client, from_date=c_start, to_date=c_end, isexpired=True
+                client, from_date=c_start, to_date=c_end, is_expired=is_expired
             )
             if chunk_data is not None and not chunk_data.empty:
                 historical_dfs.append(chunk_data)
         return historical_dfs
 
-
-    def load_historical_df(self, client, lookback) -> pd.DataFrame:
+    def load_historical_df(self, client, lookback, is_expired) -> pd.DataFrame:
         """
         Loads historical data chunks and applies cleanup.
         Guarantees a clean DataFrame return type even if the contract didn't exist yet.
@@ -633,23 +588,22 @@ class Instrument:
 
         start_date, end_date = self._calculate_lookback_dates(client, lookback)
         date_chunks = self._build_date_chunks(start_date, end_date)
-        data_dfs = self._fetch_historical_chunks(client, date_chunks)
+        data_dfs = self._fetch_historical_chunks(client, date_chunks, is_expired)
 
         if not data_dfs:
             logger.warning(
-                f"No historical data available for {self.key}. "
-                f"Contract likely was not listed on the exchange during this lookback window."
+                f"No historical data available for {self.key}. Contract likely was not listed."
             )
-            return pd.DataFrame()  # Explicitly return an empty DataFrame to protect downstream code
+            return pd.DataFrame()
 
         data = pd.concat(data_dfs, ignore_index=True)
 
         clean_data = data.copy()
-        clean_data[["open", "high", "low", "close"]] = clean_data[["open", "high", "low", "close"]].ffill()
+        clean_data[["open", "high", "low", "close"]] = clean_data[
+            ["open", "high", "low", "close"]
+        ].ffill()
         clean_data["vol"] = (
-            pd.to_numeric(clean_data["vol"], errors="coerce")
-            .fillna(0)
-            .astype(float)
+            pd.to_numeric(clean_data["vol"], errors="coerce").fillna(0).astype(float)
         )
 
         return clean_data
@@ -663,18 +617,13 @@ class Instrument:
         data: pd.DataFrame | None = None,
         metadata: dict | None = None,
         load_history: bool = False,
+        is_expired: bool = True
     ):
-        """
-        Loads instrument data and metadata into the instance. The data is expected to be a DataFrame containing the candles, and
-        the metadata is expected to contain keys like 'instrument_key', 'date', 'expiry', 'lot_size', 'strike_price', and 'freeze_quantity'.
-        """
-        from core.upstox_methods import DATA_DIR
-        from dateutil.relativedelta import relativedelta
-        from datetime import timedelta
+        from core.methods import load_parquet
 
         if path is None and data is None:
             raise ValueError(
-                "Either a path to parquet file or a pd.DataFrame and a metadata must be provided. None was provided."
+                "Either a path to parquet file or pd.DataFrame and metadata must be provided."
             )
 
         if path is not None:
@@ -693,51 +642,27 @@ class Instrument:
         ins.type = str(metadata.get("instrument_type", "Index"))
         ins.exchange = str(metadata.get("exchange", "NSE"))
 
-        if load_history:
-            historical_dfs = []
-
-            if lookback > 0:
-                end_date = ins.date - timedelta(days=1)
-                start_date = end_date
-                days_found = 0
-
-                # 1. Walk backwards to find the exact start_date
-                while days_found < lookback:
-                    if not client.is_exchange_holiday(
-                        start_date, exchange=ins.exchange
-                    ):
-                        days_found += 1
-
-                    if days_found < lookback:
-                        start_date -= timedelta(days=1)
-
-                # 2. Pre-calculate the explicit chunk boundaries to prevent infinite loops
-                date_chunks = []
-                curr_start = start_date
-                while curr_start <= end_date:
-                    curr_end = min(
-                        curr_start + relativedelta(months=1) - timedelta(days=1),
-                        end_date,
-                    )
-                    date_chunks.append((curr_start, curr_end))
-                    curr_start = curr_end + timedelta(days=1)
-
-                # 3. Execute the strictly defined chunks
-                for c_start, c_end in date_chunks:
-                    logger.info(f"Fetching historical chunk: {c_start} to {c_end}")
-
-                    chunk_data = ins.load_previous(
-                        client, from_date=c_start, to_date=c_end, isexpired=True
-                    )
-
-                    if chunk_data is not None and not chunk_data.empty:
-                        historical_dfs.append(chunk_data)
-
-            data_dfs = historical_dfs + [data]
-            data = pd.concat(data_dfs, ignore_index=True) if len(data_dfs) > 1 else data
+        data_dfs = []
+        if load_history and lookback > 0:
+            hist_data = ins.load_historical_df(client, lookback, is_expired=is_expired)
+            if not hist_data.empty:
+                data_dfs.append(hist_data)
 
         if data is not None and not data.empty:
-            clean_data = data.copy()
+            data_dfs.append(data)
+
+        if not data_dfs:
+            return ins
+
+        final_data = pd.concat(data_dfs, ignore_index=True)
+        candles = ins.df_to_candles(final_data)
+        ins.historical_candles.extend(candles)
+        return ins
+        
+
+    def df_to_candles(self, df: pd.DataFrame) -> list[Candle]:
+        if not df.empty:
+            clean_data = df.copy()
             clean_data[["open", "high", "low", "close"]] = clean_data[
                 ["open", "high", "low", "close"]
             ].ffill()
@@ -746,10 +671,18 @@ class Instrument:
                 .fillna(0)
                 .astype(float)
             )
+            
+            def _normalize_tz(ts):
+                if pd.isna(ts): return ts
+                parsed = pd.to_datetime(ts)
+                return parsed.tz_localize("Asia/Kolkata") if parsed.tzinfo is None else parsed.tz_convert("Asia/Kolkata")
+            
+            clean_data["timestamp"] = clean_data["timestamp"].apply(_normalize_tz)
+                                    
             candles = [
                 Candle(timestamp=t, open=o, high=h, low=l, close=c, volume=v)
                 for t, o, h, l, c, v in zip(
-                    to_ist(clean_data["timestamp"]),
+                    clean_data["timestamp"],  # Passed directly without to_ist()
                     clean_data["open"],
                     clean_data["high"],
                     clean_data["low"],
@@ -757,8 +690,7 @@ class Instrument:
                     clean_data["vol"],
                 )
             ]
-            ins.historical_candles.extend(candles)
-        return ins
+        return candles
 
 
 @dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
@@ -824,8 +756,9 @@ class Bucket:
     spot: Instrument | None = None
     legs: dict[str, Instrument] = field(default_factory=dict)
     open_position: Position | None = None
-    probability_matrix : Any = None
-
+    probability_matrix: Any = None
+    pending_entry: Any = None
+    pending_exit: Any = None 
     def add_leg(self, item: Instrument | dict[str, Instrument], leg_type):
         """Adds Instrument instances as legs to a bucket object.
 

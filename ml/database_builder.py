@@ -126,17 +126,17 @@ def process_bucket(bucket: Bucket, trader: ana.Trader, master_list: list,  **kwa
 
     combined_df = spot_df_new.copy()
     
-    # 1. Removed next_open and next_time from this list
+    # --- THE FIX: ADD 'next_open' TO THE SAVED COLUMNS TO SIMULATE LATENCY ---
     for df, side in zip((ce_df_new, pe_df_new), ("ce", "pe")):
-        for obj in ["open", "high", "low", "close", "ATR"]: 
+        for obj in ["open", "high", "low", "close", "ATR", "next_open"]: 
             combined_df[f"{side}_{obj}"] = df.get(obj)
 
-    # 2. Drop the NA-TRAPS, plus the useless VWAP
+    # Drop the NA-TRAPS, plus the useless VWAP
     columns_to_drop = ["SUPERTl", "SUPERTs", "VWAP", "buy_signal", "sell_signal"]
     existing_cols_to_drop = [col for col in columns_to_drop if col in combined_df.columns]
     combined_df.drop(columns=existing_cols_to_drop, inplace=True)
     
-    # 3. Safe to drop the 14-minute morning ATR NaNs and the 62 illiquid rows!
+    # Safe to drop the morning ATR NaNs and the newly added end-of-day next_open NaNs
     combined_df = combined_df.dropna()
     
     if not combined_df.empty:
@@ -155,7 +155,6 @@ def integrity_check(df):
     print(f"Total Columns: {len(df.columns)}")
 
     # 2. Time Sorting Check
-    # ML breaks instantly if time travels backwards
     is_sorted = df.index.is_monotonic_increasing
     print(f"Chronologically Sorted: {'✅ YES' if is_sorted else '❌ NO (CRITICAL ERROR)'}")
 
@@ -167,7 +166,6 @@ def integrity_check(df):
         print(f"Duplicate Timestamps: ❌ {duplicate_times} (Warning: Will confuse the model)")
 
     # 4. NaN / Missing Value Check
-    # If this is > 0, Optuna will crash
     total_nans = df.isna().sum().sum()
     if total_nans == 0:
         print("Missing Values (NaNs): ✅ 0")
@@ -176,13 +174,11 @@ def integrity_check(df):
         print(df.isna().sum()[df.isna().sum() > 0])
 
     # 5. Infinity Check
-    # Sometimes weird math (like dividing by zero volume) creates 'inf' values
     has_inf = np.isinf(df.select_dtypes(include=[np.number])).values.any()
     print(f"Infinity Values (inf): {'❌ FOUND' if has_inf else '✅ 0'}")
 
     # 6. Basic Value Logic Checks
     print("\n--- Logic Checks ---")
-    # Check if Options High is actually higher than Option Low
     ce_logic = (df['ce_high'] >= df['ce_low']).all()
     pe_logic = (df['pe_high'] >= df['pe_low']).all()
     print(f"CE High >= Low: {'✅ PASS' if ce_logic else '❌ FAIL'}")

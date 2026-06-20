@@ -196,8 +196,6 @@ class TradingTUI(App):
     async def tick_processor(self):
         
         def parse_data(tick):
-            #with self.suspend():
-            #    breakpoint()
             if isinstance(tick, Tick):
                 ltp = f"[bold green]{tick.ltpc.ltp}[/]"
                 oi = tick.oi
@@ -208,8 +206,7 @@ class TradingTUI(App):
                 low_price = tick.ohlc_1m.low
                 close_price = tick.ohlc_1m.close
                 market_open = tick.market_open
-                row = SimpleNamespace(
-                    oi=oi,
+                row = SimpleNamespace(oi=oi,
                     vol=vol,
                     ltp=int(ltp),
                     lts=lts,
@@ -363,7 +360,6 @@ class TradingTUI(App):
                 logger.info("tick awaited")
                 ticks: dict = await self.socket.recv_json()     
                 logger.info("tick recvd")
-                
                 try:
                     for key, tick in ticks.items():
                         tick = SimpleNamespace(**json.loads(tick))
@@ -516,7 +512,7 @@ class TradingTUI(App):
     def on_ready(self):
         # Start the background trading loop
         self.portfolio_streamer()
-        self.set_interval(2.0,self.table_refresher)
+        #self.set_interval(2.0,self.table_refresher)
         self.tick_processor()
 
     def on_unmount(self) -> None:

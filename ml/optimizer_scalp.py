@@ -28,14 +28,19 @@ global_df = pd.read_parquet(TRAINING_DATA_PATH)
 if not isinstance(global_df.index, pd.DatetimeIndex):
     global_df.index = pd.to_datetime(global_df.index)
 
+# =====================================================================
+# EXTRACT THE ARRAYS
+# =====================================================================
 DATES = global_df.index.date
 CE_HIGH = global_df['ce_high'].values
 CE_LOW = global_df['ce_low'].values
 CE_CLOSE = global_df['ce_close'].values
+CE_NEXT_OPEN = global_df['ce_next_open'].values  # NEW: Latency simulator
 
 PE_HIGH = global_df['pe_high'].values
 PE_LOW = global_df['pe_low'].values
 PE_CLOSE = global_df['pe_close'].values
+PE_NEXT_OPEN = global_df['pe_next_open'].values  # NEW: Latency simulator
 
 SPOT_CLOSE = global_df['close'].values
 EMA_200 = global_df['EMA_200'].values
@@ -48,6 +53,8 @@ BB_WIDTH = global_df['BB_width'].values
 # =====================================================================
 # 1.5 DYNAMIC LOT SIZE & TAX CALCULATOR
 # =====================================================================
+SLIPPAGE = 0.5  # Constant Spread slippage applied to market orders
+
 def get_nifty_lot_size(trade_date):
     if trade_date >= datetime.date(2026, 1, 1): return 65
     elif trade_date >= datetime.date(2024, 11, 20): return 75
@@ -66,7 +73,7 @@ def calculate_options_charges(buy_price, sell_price, qty):
     return brokerage + stt + txn_charge + sebi_charge + stamp_duty + gst
 
 # =====================================================================
-# 2. FAST UNIFIED PNL EVALUATOR (No Time Leaks)
+# 2. FAST UNIFIED PNL EVALUATOR
 # =====================================================================
 def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail_arr, pe_sl_arr, pe_tg_arr, pe_trail_arr, max_daily_trades, max_daily_profit):
     total_pnl = 0.0
@@ -107,13 +114,17 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
 
         if opt_type == 0:
             prices_high, prices_low, prices_close = CE_HIGH, CE_LOW, CE_CLOSE
+            prices_next_open = CE_NEXT_OPEN
         else:
             prices_high, prices_low, prices_close = PE_HIGH, PE_LOW, PE_CLOSE
+            prices_next_open = PE_NEXT_OPEN
 
-        entry_price = prices_close[start_idx]
+        # LATENCY ENTRY: Enter exactly on the NEXT candle's open + spread penalty
+        entry_price = prices_next_open[start_idx] + SLIPPAGE
         highest_seen = entry_price
         current_lot_size = get_nifty_lot_size(trade_date)
 
+        # Because we entered on next_open, execution starts on the NEXT candle
         curr_idx = start_idx + 1
         exit_price = 0.0
 
@@ -121,13 +132,12 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
             high = prices_high[curr_idx]
             low = prices_low[curr_idx]
 
-            if low <= sl:
-                exit_price = sl
+            if high >= tg:
+                exit_price = tg # Limit Order: Zero Slippage
                 last_exit_idx = curr_idx
                 break
-
-            if high >= tg:
-                exit_price = tg
+            if low <= sl:
+                exit_price = sl - SLIPPAGE # Market Order: Pay Spread Penalty
                 last_exit_idx = curr_idx
                 break
 
@@ -138,7 +148,7 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
             curr_idx += 1
 
         if exit_price == 0.0:
-            exit_price = prices_close[curr_idx - 1]
+            exit_price = prices_close[curr_idx - 1] - SLIPPAGE # EOD Market Order
             last_exit_idx = curr_idx - 1
 
         trade_gross_pnl = (exit_price - entry_price) * current_lot_size
@@ -198,19 +208,21 @@ def objective(trial):
     if len(ce_indices) == 0 and len(pe_indices) == 0:
         return -99999.0
 
-    # Build Arrays for the Unified Engine
+    # Build Arrays - Using REAL fill price (Next Open + Slippage) to set targets/stops
     ce_sl, ce_tg, ce_trail = [], [], []
     if len(ce_indices) > 0:
         ce_atrs = global_df['ce_ATR'].values[ce_indices]
-        ce_sl = CE_CLOSE[ce_indices] - (ce_atrs * sl_atr)
-        ce_tg = CE_CLOSE[ce_indices] + (ce_atrs * target_atr)
+        ce_fills = CE_NEXT_OPEN[ce_indices] + SLIPPAGE
+        ce_sl = ce_fills - (ce_atrs * sl_atr)
+        ce_tg = ce_fills + (ce_atrs * target_atr)
         ce_trail = ce_atrs * trailing_sl_atr
 
     pe_sl, pe_tg, pe_trail = [], [], []
     if len(pe_indices) > 0:
         pe_atrs = global_df['pe_ATR'].values[pe_indices]
-        pe_sl = PE_CLOSE[pe_indices] - (pe_atrs * sl_atr)
-        pe_tg = PE_CLOSE[pe_indices] + (pe_atrs * target_atr)
+        pe_fills = PE_NEXT_OPEN[pe_indices] + SLIPPAGE
+        pe_sl = pe_fills - (pe_atrs * sl_atr)
+        pe_tg = pe_fills + (pe_atrs * target_atr)
         pe_trail = pe_atrs * trailing_sl_atr
 
     # Evaluate everything in a single chronological sweep
@@ -244,7 +256,7 @@ if __name__ == "__main__":
         study.optimize(
             objective, 
             n_trials=4000, 
-            n_jobs=30, 
+            n_jobs=24, 
             show_progress_bar=True
         )
     except KeyboardInterrupt:

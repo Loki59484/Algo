@@ -296,9 +296,9 @@ def prepare_bucket_data(
         logger.warning(f"NoneType option found for bucket {bucket.date}")
         return False
 
-    spot_df = spot.load_historical_df(ustox, lookback=30)
-    ce_df = call_option.load_historical_df(ustox, lookback=1)
-    pe_df = put_option.load_historical_df(ustox, lookback=1)
+    spot_df = spot.load_historical_df(ustox, lookback=30,is_expired=True)
+    ce_df = call_option.load_historical_df(ustox, lookback=1,is_expired=True)
+    pe_df = put_option.load_historical_df(ustox, lookback=1,is_expired=True)
 
     def secure_prep(df):
         if df is None or df.empty:

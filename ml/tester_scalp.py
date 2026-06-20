@@ -31,8 +31,6 @@ BEST_PARAMS = {
     'max_daily_profit': 18301.0
 }
 
-
-
 if not TESTING_DATA_PATH.exists():
      raise FileNotFoundError(f"Could not find {TESTING_DATA_PATH}. Did you run the database_builder.py script?")
  
@@ -46,11 +44,13 @@ DATES = df.index.date
 CE_HIGH = df['ce_high'].values
 CE_LOW = df['ce_low'].values
 CE_CLOSE = df['ce_close'].values
+CE_NEXT_OPEN = df['ce_next_open'].values  # NEW: Latency simulator
 
 # Extract PE arrays for bearish trades
 PE_HIGH = df['pe_high'].values
 PE_LOW = df['pe_low'].values
 PE_CLOSE = df['pe_close'].values
+PE_NEXT_OPEN = df['pe_next_open'].values  # NEW: Latency simulator
 
 # Extract Trend & Filter arrays
 SPOT_CLOSE = df['close'].values
@@ -62,8 +62,10 @@ MACD_SIG = df['MACD_signal'].values
 BB_WIDTH = df['BB_width'].values
 
 # =====================================================================
-# 3. HELPER FUNCTIONS
+# 1.5 DYNAMIC LOT SIZE & TAX CALCULATOR
 # =====================================================================
+SLIPPAGE = 0.5  # Constant Spread slippage applied to market orders
+
 def get_nifty_lot_size(trade_date):
     if trade_date >= pd.Timestamp("2026-01-01").date(): return 65
     elif trade_date >= pd.Timestamp("2024-11-20").date(): return 75
@@ -133,10 +135,13 @@ def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce
         # Select appropriate arrays based on option type
         if opt_type == 0:
             prices_high, prices_low, prices_close = CE_HIGH, CE_LOW, CE_CLOSE
+            prices_next_open = CE_NEXT_OPEN
         else:
             prices_high, prices_low, prices_close = PE_HIGH, PE_LOW, PE_CLOSE
+            prices_next_open = PE_NEXT_OPEN
 
-        entry_price = prices_close[start_idx]
+        # LATENCY ENTRY: Enter exactly on the NEXT candle's open + spread penalty
+        entry_price = prices_next_open[start_idx] + SLIPPAGE
         highest_seen = entry_price
         current_lot_size = get_nifty_lot_size(trade_date)
         
@@ -150,11 +155,11 @@ def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce
             # --- THE PESSIMISTIC FLIP (Safety First) ---
             # Check Stoploss BEFORE Target to simulate the absolute worst-case scenario.
             if low <= sl:
-                exit_price = sl
+                exit_price = sl - SLIPPAGE # Market Order: Pay Spread Penalty
                 last_exit_idx = curr_idx
                 break
             if high >= tg:
-                exit_price = tg
+                exit_price = tg # Limit Order: Zero Slippage
                 last_exit_idx = curr_idx
                 break
                 
@@ -165,7 +170,7 @@ def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce
             curr_idx += 1
             
         if exit_price == 0.0:
-            exit_price = prices_close[curr_idx - 1]
+            exit_price = prices_close[curr_idx - 1] - SLIPPAGE # EOD Market Order
             last_exit_idx = curr_idx - 1
             
         trade_gross_pnl = (exit_price - entry_price) * current_lot_size
@@ -223,18 +228,21 @@ ce_indices = np.where(ce_mask)[0]
 pe_indices = np.where(pe_mask)[0]
 
 # --- EXTRACT ARRAYS AND PASS TO THE UNIFIED ENGINE IN ONE GO ---
+# Build Arrays - Using REAL fill price (Next Open + Slippage) to set targets/stops
 ce_sl, ce_tg, ce_trail = [], [], []
 if len(ce_indices) > 0:
     ce_atrs = df['ce_ATR'].values[ce_indices]
-    ce_sl = CE_CLOSE[ce_indices] - (ce_atrs * BEST_PARAMS['sl_atr'])
-    ce_tg = CE_CLOSE[ce_indices] + (ce_atrs * BEST_PARAMS['target_atr'])
+    ce_fills = CE_NEXT_OPEN[ce_indices] + SLIPPAGE
+    ce_sl = ce_fills - (ce_atrs * BEST_PARAMS['sl_atr'])
+    ce_tg = ce_fills + (ce_atrs * BEST_PARAMS['target_atr'])
     ce_trail = ce_atrs * BEST_PARAMS['trailing_sl_atr'] 
 
 pe_sl, pe_tg, pe_trail = [], [], []
 if len(pe_indices) > 0:
     pe_atrs = df['pe_ATR'].values[pe_indices]
-    pe_sl = PE_CLOSE[pe_indices] - (pe_atrs * BEST_PARAMS['sl_atr'])
-    pe_tg = PE_CLOSE[pe_indices] + (pe_atrs * BEST_PARAMS['target_atr'])
+    pe_fills = PE_NEXT_OPEN[pe_indices] + SLIPPAGE
+    pe_sl = pe_fills - (pe_atrs * BEST_PARAMS['sl_atr'])
+    pe_tg = pe_fills + (pe_atrs * BEST_PARAMS['target_atr'])
     pe_trail = pe_atrs * BEST_PARAMS['trailing_sl_atr'] 
 
 total_stats, daily_logs = evaluate_and_report_unified(

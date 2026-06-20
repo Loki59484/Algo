@@ -30,7 +30,6 @@ if str(ROOT_DIR) not in sys.path:
 # IMPORTING CUSTOM MODULES
 from core.datatypes import Instrument, Portfolio, Position, Bucket, Order, Candle, Tick
 from core.upstox_methods import UpstoxClient, LOG_DIR
-from core.methods import to_ist
 
 logger = logging.getLogger(__name__)
 
@@ -149,13 +148,7 @@ class SimfeedStreamer(Streamer):
         buffer (asyncio.Queue): Output queue to push tick data into.
         stopevent (asyncio.Event): Event to stop streaming tick data.
     """
-    def __init__(self, instruments: dict[str, Instrument], buffer: asyncio.Queue,stopevent:asyncio.Event):
-        """
-        Args:
-            instruments (dict[str, Instrument])
-            buffer (asyncio.Queue) 
-            stopevent (asyncio.Event)
-        """
+    def __init__(self, instruments: dict[str, Instrument], buffer: asyncio.Queue, stopevent: asyncio.Event):
         super().__init__()
         self.instruments: dict[str, Instrument] = instruments
         self.keys: list = [i.key for i in instruments.values()]
@@ -175,30 +168,61 @@ class SimfeedStreamer(Streamer):
         await self.simulator(buffer=self.buffer)
 
     async def simulator(self, buffer: asyncio.Queue):
-        from copy import deepcopy
         i = 0
-        items_to_simulate = deepcopy(self.instruments)
-
-        sim_data = {key:[sim_candle for sim_candle in items.historical_candles if sim_candle.timestamp.date()==items.date] for key,items in items_to_simulate.items()}
+        sim_data = {}
+        for key, instrument in self.instruments.items():
+            past_candles = []
+            today_candles = []
+            # Separate the historical data from the simulation data
+            for candle in instrument.historical_candles:
+                if candle.timestamp.date() == instrument.date:
+                    today_candles.append(candle)
+                else:
+                    past_candles.append(candle)
+            instrument.historical_candles.clear()
+            instrument.historical_candles.extend(past_candles)            
+            if len(today_candles) <=0:
+                logger.info(f"No data to simulate for date {instrument.date}") 
+            sim_data[key] = today_candles
+        active_keys = list(sim_data.keys())
+        logger.info ('Simulation started.')
         while True:
             try: 
                 if not self.stopevent.is_set():                    
-                    for key,data in self.instruments.items():
-                        if i==len(data.historical_candles):
-                            items_to_simulate.pop(key)
-                    if not items_to_simulate:
+                    tick_data = {}
+                    keys_to_remove = []
+                    
+                    # Safely grab the next tick for each active instrument
+                    for key in active_keys:
+                        if i < len(sim_data[key]):
+                            tick_data[key] = sim_data[key][i]
+                        else:
+                            keys_to_remove.append(key)
+                            
+                    # Remove instruments that have run out of data
+                    for key in keys_to_remove:
+                        active_keys.remove(key)
+                        
+                    # If all instruments are out of data, end simulation
+                    if not active_keys:
                         logger.info("Simulation completed.")
                         self.stopevent.set()
                         return
-                    tick_data = {key:data[i] for key,data in sim_data.items()}
-                    await buffer.put(tick_data)
-                    i+=1
-                    await asyncio.sleep(0.01)
+                        
+                    # Push the cross-section of ticks to the processor
+                    if tick_data:
+                        await buffer.put(tick_data)
+                        
+                    i += 1
+                    
+                    # Slight delay to allow processor to yield and execute async context
+                    await asyncio.sleep(0.1) 
                 else:
                     logger.info("Simulation Stopped")
                     break
             except Exception as e:
                 logger.exception(f"Exception while simulating.\n{e}")
+                break
 
 
 
@@ -275,6 +299,8 @@ class Strategy:
             if not target:
                 return None
             target = pd.DataFrame([{**asdict(candle), **kwargs} for candle in target])
+            target.set_index('timestamp',inplace=True,drop=True)
+
 
         if target.empty:
             return None
@@ -322,6 +348,7 @@ class Strategy:
         if target.empty or not (self.indicators and self.indicators.ta):
             return None
         target.ta.study(self.indicators)
+        target = target.reset_index()
         
         return target
 
