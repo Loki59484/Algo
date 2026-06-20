@@ -136,11 +136,14 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
             # --- THE PESSIMISTIC FLIP (Safety First) ---
             # Check Stoploss BEFORE Target to simulate the absolute worst-case scenario.
             if low <= sl:
-                exit_price = sl # SL-LIMIT Order: Zero Slippage (Dynamic Order Book Toggling)
+                # REVERTED TO MARKET ORDER: Safest way to guarantee an exit. 
+                # We deduct SLIPPAGE because we are hitting the bid.
+                exit_price = sl - SLIPPAGE 
                 last_exit_idx = curr_idx
                 break
             if high >= tg:
-                exit_price = tg # Target Limit Order: Zero Slippage
+                # TARGET LIMIT ORDER: Placed in the book, hit precisely. Zero Slippage.
+                exit_price = tg 
                 last_exit_idx = curr_idx
                 break
 
@@ -168,30 +171,29 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
 # 3. THE OPTUNA OBJECTIVE
 # =====================================================================
 def objective(trial):
-    # THE OVERFIT FIX: Use strict `step` increments to force the AI 
-    # to find broad, generalizable patterns instead of memorizing data.
-    
-    rsi_min = trial.suggest_int("rsi_min", 50, 70, step=5)  # Can only be 50, 55, 60, 65, 70
+    rsi_min = trial.suggest_int("rsi_min", 50, 70, step=5)  
     adx_min = trial.suggest_int("adx_min", 25, 45, step=5)
+    
+    # NEW: Crash/Parabolic Prevention. Do not enter if ADX is dangerously high!
+    adx_max = trial.suggest_int("adx_max", 50, 80, step=5)
     
     use_ema_filter = trial.suggest_categorical("use_ema", [True, False])
     use_supertrend_filter = trial.suggest_categorical("use_supertrend", [True, False])
     req_active_slope = trial.suggest_categorical("req_active_slope", [True, False])
     use_macd_filter = trial.suggest_categorical("use_macd", [True, False])
     
-    # Coarse steps prevent insane 15-decimal curve fitting
     bb_max_width = trial.suggest_float("bb_max_width", 0.01, 0.06, step=0.01)
     
     sl_atr = trial.suggest_float("sl_atr", 0.8, 2.0, step=0.2)
     target_atr = trial.suggest_float("target_atr", 2.0, 6.0, step=0.5)
     trailing_sl_atr = trial.suggest_float("trailing_sl_atr", 0.5, 2.0, step=0.5)
     
-    # Allow 2 to 4 trades to ensure statistical significance over noise
     max_daily_trades = trial.suggest_int("max_daily_trades", 2, 4)
     max_daily_profit = trial.suggest_int("max_daily_profit", 3000, 15000, step=1000) 
     
-    ce_mask = (global_df['RSI'] > rsi_min) & (global_df['ADX'] > adx_min)
-    pe_mask = (global_df['RSI'] < (100 - rsi_min)) & (global_df['ADX'] > adx_min)
+    # Applied ADX Ceiling Protection
+    ce_mask = (global_df['RSI'] > rsi_min) & (global_df['ADX'] > adx_min) & (global_df['ADX'] < adx_max)
+    pe_mask = (global_df['RSI'] < (100 - rsi_min)) & (global_df['ADX'] > adx_min) & (global_df['ADX'] < adx_max)
     
     if use_ema_filter:
         ce_mask &= (SPOT_CLOSE > EMA_200)
@@ -215,7 +217,6 @@ def objective(trial):
     if len(ce_indices) == 0 and len(pe_indices) == 0:
         return -99999.0
 
-    # Build Arrays - Using REAL fill price (Next Open + Slippage)
     ce_sl, ce_tg, ce_trail = [], [], []
     if len(ce_indices) > 0:
         ce_atrs = global_df['ce_ATR'].values[ce_indices]
@@ -232,7 +233,6 @@ def objective(trial):
         pe_tg = pe_fills + (pe_atrs * target_atr)
         pe_trail = pe_atrs * trailing_sl_atr
 
-    # Evaluate everything in a single chronological sweep
     net_profit = fast_evaluate_unified(
         ce_indices, pe_indices, ce_sl, ce_tg, ce_trail, pe_sl, pe_tg, pe_trail, 
         max_daily_trades, max_daily_profit
@@ -246,7 +246,7 @@ def objective(trial):
 if __name__ == "__main__":
     
     study_name = "nifty_scalp_robust"
-    storage_name = "sqlite:///optuna_scalp_robust.db" # New DB to avoid old overfit data
+    storage_name = "sqlite:///optuna_scalp_robust.db" 
     
     print(f"Igniting Robust Optuna Scalp Database: {storage_name}")
     
@@ -260,7 +260,6 @@ if __name__ == "__main__":
     print("Firing up parallel CPU cores for robust chronological optimization...")
     
     try:
-        # Reduced trials since the search space is now much smaller and discretized
         study.optimize(
             objective, 
             n_trials=1500, 
