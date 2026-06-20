@@ -53,7 +53,6 @@ SNIPE_BEST_PARAMS = {
     "target_atr": 8.0,
     "trailing_sl_atr": 1.5,
 }
-"""
 SCALP_BEST_PARAMS = {
     "rsi_min": 45,
     "adx_min": 20,
@@ -67,22 +66,6 @@ SCALP_BEST_PARAMS = {
     "trailing_sl_atr": 0.3,
     "max_daily_trades": 50,
     "max_daily_profit": 18301.0,
-}
-"""
-
-SCALP_BEST_PARAMS = {
-    'rsi_min': 57,
-    'adx_min': 34,
-    'use_ema': True,
-    'use_supertrend': False,
-    'req_active_slope': False,
-    'use_macd': False,
-    'bb_max_width': 0.04802486645337926,
-    'sl_atr': 1.0,
-    'target_atr': 4.5,
-    'trailing_sl_atr': 1.5,
-    'max_daily_trades': 10,
-    'max_daily_profit': 28014,
 }
 
 # =====================================================================
@@ -191,7 +174,7 @@ def _close_trade(trader, bucket, timestamp, exit_price, remark, gear_name):
         logger.exception(f"Error in _close_trade: {e}")
 
 
-def _manage_position(bucket, call_option, put_option, ce_df, pe_df, timestamp, trader, active_params, gear_name):
+def _manage_position(bucket, call_option, ce_df, pe_df, timestamp, active_params, gear_name):
     try:
         pos = bucket.open_position
         pos_key = getattr(pos, "instrument_token", getattr(pos, "instrument_key", getattr(pos, "key", None)))
@@ -221,7 +204,7 @@ def _manage_position(bucket, call_option, put_option, ce_df, pe_df, timestamp, t
                 "remark": remark,
                 "gear": gear_name
             }
-            logger.info(f"[{gear_name}] {remark} TRIGGERED: Routing Market Order to exchange... (Simulating 1-Tick Latency)")
+            logger.info(f"[{gear_name}] {remark} TRIGGERED : Routing Market Order to exchange... (Simulating 1-Tick Latency)")
         else:
             if high > pos.highest_seen:
                 pos.highest_seen = high
@@ -355,7 +338,7 @@ async def executor(trader: ana.Trader, bucket: Bucket, ui_socket: zmq.asyncio.So
     # 3. MANAGE CURRENT OPEN POSITIONS
     # ---------------------------------------------------------
     if bucket.open_position is not None:
-        _manage_position(bucket, call_option, put_option, ce_df, pe_df, timestamp, trader, ACTIVE_PARAMS, gear_name)
+        _manage_position(bucket, call_option, ce_df, pe_df, timestamp, ACTIVE_PARAMS, gear_name)
         return
 
 

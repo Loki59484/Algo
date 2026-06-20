@@ -120,6 +120,7 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
             prices_next_open = PE_NEXT_OPEN
 
         # LATENCY ENTRY: Enter exactly on the NEXT candle's open + spread penalty
+        # (Entries are still Market Orders catching the breakout)
         entry_price = prices_next_open[start_idx] + SLIPPAGE
         highest_seen = entry_price
         current_lot_size = get_nifty_lot_size(trade_date)
@@ -132,12 +133,14 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
             high = prices_high[curr_idx]
             low = prices_low[curr_idx]
 
-            if high >= tg:
-                exit_price = tg # Limit Order: Zero Slippage
+            # --- THE PESSIMISTIC FLIP (Safety First) ---
+            # Check Stoploss BEFORE Target to simulate the absolute worst-case scenario.
+            if low <= sl:
+                exit_price = sl # SL-LIMIT Order: Zero Slippage (Dynamic Order Book Toggling)
                 last_exit_idx = curr_idx
                 break
-            if low <= sl:
-                exit_price = sl - SLIPPAGE # Market Order: Pay Spread Penalty
+            if high >= tg:
+                exit_price = tg # Target Limit Order: Zero Slippage
                 last_exit_idx = curr_idx
                 break
 
@@ -148,7 +151,7 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
             curr_idx += 1
 
         if exit_price == 0.0:
-            exit_price = prices_close[curr_idx - 1] - SLIPPAGE # EOD Market Order
+            exit_price = prices_close[curr_idx - 1] - SLIPPAGE # EOD Forced Market Order
             last_exit_idx = curr_idx - 1
 
         trade_gross_pnl = (exit_price - entry_price) * current_lot_size

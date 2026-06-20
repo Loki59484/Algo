@@ -17,18 +17,18 @@ ustox = UpstoxClient()
 # 1. HARDCODE YOUR BEST PARAMETERS HERE
 # =====================================================================
 BEST_PARAMS = {
-    'rsi_min': 57,
-    'adx_min': 34,
-    'use_ema': True,
-    'use_supertrend': False,
-    'req_active_slope': False,
-    'use_macd': False,
-    'bb_max_width': 0.04802486645337926,
-    'sl_atr': 1.0,
-    'target_atr': 4.5,
-    'trailing_sl_atr': 1.5,
-    'max_daily_trades': 1,
-    'max_daily_profit': 28014,
+    "rsi_min": 45,
+    "adx_min": 20,
+    "use_ema": True,
+    "use_supertrend": False,
+    "req_active_slope": False,
+    "use_macd": False,
+    "bb_max_width": 0.06897211941654376,
+    "sl_atr": 1.3,
+    "target_atr": 2.0,
+    "trailing_sl_atr": 0.3,
+    "max_daily_trades": 50,
+    "max_daily_profit": 18301.0,
 }
 
 if not TESTING_DATA_PATH.exists():
@@ -64,7 +64,7 @@ BB_WIDTH = df['BB_width'].values
 # =====================================================================
 # 1.5 DYNAMIC LOT SIZE & TAX CALCULATOR
 # =====================================================================
-SLIPPAGE = 0.5  # Constant Spread slippage applied to market orders
+SLIPPAGE = 0.1  # Constant Spread slippage applied to market orders
 
 def get_nifty_lot_size(trade_date):
     if trade_date >= pd.Timestamp("2026-01-01").date(): return 65
