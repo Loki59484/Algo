@@ -171,25 +171,25 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
 # 3. THE OPTUNA OBJECTIVE
 # =====================================================================
 def objective(trial):
-    rsi_min = trial.suggest_int("rsi_min", 50, 70, step=5)  
-    adx_min = trial.suggest_int("adx_min", 25, 45, step=5)
+    rsi_min = trial.suggest_int("rsi_min", 50, 70)  
+    adx_min = trial.suggest_int("adx_min", 25, 45)
     
     # NEW: Crash/Parabolic Prevention. Do not enter if ADX is dangerously high!
-    adx_max = trial.suggest_int("adx_max", 50, 80, step=5)
+    adx_max = trial.suggest_int("adx_max", 50, 80)
     
     use_ema_filter = trial.suggest_categorical("use_ema", [True, False])
     use_supertrend_filter = trial.suggest_categorical("use_supertrend", [True, False])
     req_active_slope = trial.suggest_categorical("req_active_slope", [True, False])
     use_macd_filter = trial.suggest_categorical("use_macd", [True, False])
     
-    bb_max_width = trial.suggest_float("bb_max_width", 0.01, 0.06, step=0.01)
+    bb_max_width = trial.suggest_float("bb_max_width", 0.01, 0.06, step=0.005)
     
     sl_atr = trial.suggest_float("sl_atr", 0.8, 2.0, step=0.2)
-    target_atr = trial.suggest_float("target_atr", 2.0, 6.0, step=0.5)
-    trailing_sl_atr = trial.suggest_float("trailing_sl_atr", 0.5, 2.0, step=0.5)
+    target_atr = trial.suggest_float("target_atr", 2.0, 6.0, step=0.2)
+    trailing_sl_atr = trial.suggest_float("trailing_sl_atr", 0.5, 2.0, step=0.2)
     
-    max_daily_trades = trial.suggest_int("max_daily_trades", 2, 4)
-    max_daily_profit = trial.suggest_int("max_daily_profit", 3000, 15000, step=1000) 
+    max_daily_trades = trial.suggest_int("max_daily_trades", 2, 20)
+    max_daily_profit = trial.suggest_int("max_daily_profit", 3000, 15000) 
     
     # Applied ADX Ceiling Protection
     ce_mask = (global_df['RSI'] > rsi_min) & (global_df['ADX'] > adx_min) & (global_df['ADX'] < adx_max)
