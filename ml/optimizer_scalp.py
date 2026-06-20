@@ -262,7 +262,7 @@ if __name__ == "__main__":
     try:
         study.optimize(
             objective, 
-            n_trials=1500, 
+            n_trials=2500, 
             n_jobs=24, 
             show_progress_bar=True
         )
