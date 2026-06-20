@@ -17,18 +17,18 @@ ustox = UpstoxClient()
 # 1. HARDCODE YOUR BEST PARAMETERS HERE
 # =====================================================================
 BEST_PARAMS = {
-    'rsi_min': 45,
-    'adx_min': 20,
-    'use_ema': True,
+    'rsi_min': 53,
+    'adx_min': 21,
+    'use_ema': False,
     'use_supertrend': False,
     'req_active_slope': False,
     'use_macd': False,
-    'bb_max_width': 0.06897211941654376,
-    'sl_atr': 1.3,
-    'target_atr': 2.0,
+    'bb_max_width': 0.03189785470590039,
+    'sl_atr': 1.5,
+    'target_atr': 1.7,
     'trailing_sl_atr': 0.3,
-    'max_daily_trades': 50,
-    'max_daily_profit': 18301.0
+    'max_daily_trades': 9,
+    'max_daily_profit': 19671,
 }
 
 if not TESTING_DATA_PATH.exists():
