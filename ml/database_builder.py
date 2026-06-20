@@ -32,7 +32,8 @@ def secure_prep(df):
     df = df.rename(columns={"vol": "volume"})
 
     if "timestamp" in df.columns:
-        df["timestamp"] = to_ist(df["timestamp"])
+        # THE FIX: Removed the double to_ist() conversion here since our 
+        # datatypes.py factory now already perfectly localizes it to Asia/Kolkata!
         df = df.set_index("timestamp")
 
     df.index = pd.to_datetime(df.index)
@@ -50,9 +51,9 @@ def process_bucket(bucket: Bucket, trader: ana.Trader, master_list: list,  **kwa
     call_option: Instrument = bucket.legs.get("CE")
     put_option: Instrument = bucket.legs.get("PE")
 
-    spot_df = spot.load_historical_df(ustox, 30)
-    ce_df = call_option.load_historical_df(ustox, 1)
-    pe_df = put_option.load_historical_df(ustox, 1)
+    spot_df = spot.load_historical_df(ustox, 30, False)
+    ce_df = call_option.load_historical_df(ustox, 1, False)
+    pe_df = put_option.load_historical_df(ustox, 1, False)
 
     spot_df = secure_prep(spot_df)
     ce_df = secure_prep(ce_df)
@@ -66,6 +67,8 @@ def process_bucket(bucket: Bucket, trader: ana.Trader, master_list: list,  **kwa
         pe_df["ATR"] = 0.0
 
     spot_df = _worker(spot_df, trader.strategy.indicators, **kwargs)
+    
+    # Added safe fallbacks for varying pandas_ta naming conventions
     spot_df = spot_df.rename(
     columns={
         "SUPERT_14_2.0": "SUPERT",
@@ -78,10 +81,13 @@ def process_bucket(bucket: Bucket, trader: ana.Trader, master_list: list,  **kwa
         "DMN_14": "DMN",
         "ATRr_14": "ATR",
         "RSI_14": "RSI",
+        "EMA_200": "EMA",
         "MACD_12_26_9": "MACD",            
         "MACDs_12_26_9": "MACD_signal",    
         "BBL_20_2.0_2.0": "BBL",               
-        "BBU_20_2.0_2.0": "BBU",               
+        "BBU_20_2.0_2.0": "BBU", 
+        "BBL_20_2.0": "BBL",      # Safety Catch           
+        "BBU_20_2.0": "BBU",      # Safety Catch          
     }
     )
     
@@ -91,17 +97,21 @@ def process_bucket(bucket: Bucket, trader: ana.Trader, master_list: list,  **kwa
     if spot_df.empty or ce_df.empty or pe_df.empty:
         return False
 
-    target_date = pd.Timestamp(bucket.date)
+    # THE FIX: Timezone-Safe Date Comparison
+    # We use `.date` to extract the raw calendar date, bypassing all 
+    # naive/aware timezone matching bugs!
+    target_date = pd.to_datetime(bucket.date).date()
 
-    historical_training_data = spot_df[spot_df.index < target_date]
-    spot_df_new = spot_df[spot_df.index.normalize() == target_date]
+    historical_training_data = spot_df[spot_df.index.date < target_date]
+    spot_df_new = spot_df[spot_df.index.date == target_date]
 
-    ce_df_new = ce_df[ce_df.index.normalize() == target_date].reindex(
+    ce_df_new = ce_df[ce_df.index.date == target_date].reindex(
         spot_df_new.index, method="ffill"   
     )
-    pe_df_new = pe_df[pe_df.index.normalize() == target_date].reindex(
+    pe_df_new = pe_df[pe_df.index.date == target_date].reindex(
         spot_df_new.index, method="ffill"
     )
+    
     if spot_df_new.empty or ce_df_new.empty or pe_df_new.empty:
         logger.info(
             f"empty df - spot: {spot_df_new.empty} | ce: {ce_df_new.empty} | pe: {pe_df_new.empty}"
@@ -117,26 +127,19 @@ def process_bucket(bucket: Bucket, trader: ana.Trader, master_list: list,  **kwa
 
     bucket.probability_matrix = prob_matrix
 
-    for opt, df in zip((call_option, put_option), (ce_df_new, pe_df_new)):
-        df = df.reset_index()
-        df["next_open"] = df["open"].shift(-1)
-
-        if "timestamp" in df.columns:
-            df["next_time"] = df["timestamp"].shift(-1)
+    ce_df_new["next_open"] = ce_df_new["open"].shift(-1)
+    pe_df_new["next_open"] = pe_df_new["open"].shift(-1)
 
     combined_df = spot_df_new.copy()
     
-    # --- THE FIX: ADD 'next_open' TO THE SAVED COLUMNS TO SIMULATE LATENCY ---
     for df, side in zip((ce_df_new, pe_df_new), ("ce", "pe")):
         for obj in ["open", "high", "low", "close", "ATR", "next_open"]: 
             combined_df[f"{side}_{obj}"] = df.get(obj)
 
-    # Drop the NA-TRAPS, plus the useless VWAP
     columns_to_drop = ["SUPERTl", "SUPERTs", "VWAP", "buy_signal", "sell_signal"]
     existing_cols_to_drop = [col for col in columns_to_drop if col in combined_df.columns]
     combined_df.drop(columns=existing_cols_to_drop, inplace=True)
     
-    # Safe to drop the morning ATR NaNs and the newly added end-of-day next_open NaNs
     combined_df = combined_df.dropna()
     
     if not combined_df.empty:
@@ -246,6 +249,7 @@ if __name__ == "__main__":
             joblib.dump(insts, INSTRUMENT_CACHE)
         insts_dict = {(item.key, item.date): item for item in insts}
         trader.add_instrument(insts_dict)
+        
         # CREATE BUCKETS FOR EACH DAY
         daily_buckets = defaultdict(dict)
         for instrument in tqdm(
@@ -258,6 +262,7 @@ if __name__ == "__main__":
             else:
                 leg_type = "INDEX"
             daily_buckets[instrument.date][leg_type] = instrument
+            
         for trade_date, legs in tqdm(
             daily_buckets.items(), desc="Loading Buckets", leave=False
         ):

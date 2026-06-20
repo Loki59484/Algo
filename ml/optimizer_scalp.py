@@ -43,7 +43,7 @@ PE_CLOSE = global_df['pe_close'].values
 PE_NEXT_OPEN = global_df['pe_next_open'].values  # NEW: Latency simulator
 
 SPOT_CLOSE = global_df['close'].values
-EMA_200 = global_df['EMA_200'].values
+EMA_200 = global_df['EMA'].values
 SUPERTD = global_df['SUPERTd'].values
 SUPERT_SLOPE = global_df['SUPERT_slope'].values
 MACD = global_df['MACD'].values

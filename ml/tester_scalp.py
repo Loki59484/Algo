@@ -54,7 +54,7 @@ PE_NEXT_OPEN = df['pe_next_open'].values  # NEW: Latency simulator
 
 # Extract Trend & Filter arrays
 SPOT_CLOSE = df['close'].values
-EMA_200 = df['EMA_200'].values  
+EMA_200 = df['EMA'].values  
 SUPERTD = df['SUPERTd'].values
 SUPERT_SLOPE = df['SUPERT_slope'].values
 MACD = df['MACD'].values
