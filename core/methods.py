@@ -9,9 +9,10 @@ import pandas as pd
 import logging
 import hashlib
 import json
-
+import datetime
 # SET UP LOGGING
 logger = logging.getLogger(__name__)
+
 
 def generate_cache_key(date_str, params):
     """
@@ -20,14 +21,12 @@ def generate_cache_key(date_str, params):
     """
     # Create a string representation of your exact current rules
     param_string = json.dumps(params, sort_keys=True)
-    
+
     # Hash it to keep the filename short and clean
     param_hash = hashlib.md5(param_string.encode()).hexdigest()[:8]
-    
+
     return f"{date_str}_v_{param_hash}"
 
-
-    
 
 def filter_options(options: pd.DataFrame):
     """Filter options based on strike price and option type."""
@@ -96,11 +95,11 @@ def load_parquet(path: Path):
             key.decode("utf-8"): value.decode("utf-8")
             for key, value in (table.schema.metadata or {}).items()
         }
-        
-        return {'data':df, 'metadata':metadata}
+
+        return {"data": df, "metadata": metadata}
     except Exception as e:
         logger.exception(f"Error loading parquet file from {path}: {e}")
-        return {'data':None, 'metadata':None}
+        return {"data": None, "metadata": None}
 
 
 def to_ist(target: pd.Series | list | int | float, unit="ms"):
@@ -195,7 +194,7 @@ def push_report_to_sheets(report_df: pd.DataFrame, sheet_url: str):
 
 def setup_cli():
     """
-    Function to accept arguInitiates engine in a chronological tickwise mode for the given FILEments from cli for setting up type of engine [Live/Simulation], ui [TUI/GUI/HEADLESS] and 
+    Function to accept arguInitiates engine in a chronological tickwise mode for the given FILEments from cli for setting up type of engine [Live/Simulation], ui [TUI/GUI/HEADLESS] and
     the files or directories with files to be simulated
 
     Returns:
@@ -212,9 +211,19 @@ def setup_cli():
     simparser = subparsers.add_parser(
         "sim", help="Start Trading engine in simulation mode"
     )
-    simparser.add_argument("-idx","--index",required=False,default="NSE_INDEX|Nifty 50")
-    liveparser.add_argument("-idx","--index",required=False,default="NSE_INDEX|Nifty 50")
+    simparser.add_argument(
+        "-idx", "--index", required=False, default="NSE_INDEX|Nifty 50"
+    )
+    liveparser.add_argument(
+        "-idx", "--index", required=False, default="NSE_INDEX|Nifty 50"
+    )
     mode_group = simparser.add_mutually_exclusive_group(required=False)
+    
+    simparser.add_argument(
+    "--date", 
+    type=datetime.date.fromisoformat, 
+    help="Date in YYYY-MM-DD format"
+)
     mode_group.add_argument(
         "-b",
         "--bulk",
@@ -235,6 +244,28 @@ def setup_cli():
         metavar="FILE",
         help="Initiates engine in a chronological tickwise mode for the given FILE.",
     )
+    simparser.add_argument(
+        "-pe",
+        "--put",
+        type=str,
+        metavar="FILE",
+        help="Stores put data filepath.",
+    )
+    simparser.add_argument(
+        "-ce",
+        "--call",
+        type=str,
+        metavar="FILE",
+        help="Stores call data filepath.",
+    )
+    simparser.add_argument(
+        "-s",
+        "--spot",
+        type=str,
+        metavar="FILE",
+        help="Stores spot data filepath.",
+    )
+
     ui_group = parser.add_mutually_exclusive_group(required=False)
     ui_group.add_argument(
         "--gui", action="store_true", help="Lauch engine with Graphical User Interface"

@@ -67,11 +67,6 @@ class TradingTUI(App):
         self.local_env = {'self': self.app}
         self.ustox = UpstoxClient() if client is None else client
 
-    def set_breakpoint(self):
-        with self.suspend():
-            breakpoint(header='TUI Breakpoint')
-
-
     def compose(self) -> ComposeResult:
         """This builds the UI components."""
         yield Header(show_clock=True)
@@ -80,13 +75,23 @@ class TradingTUI(App):
             for idx,bucket in enumerate(self.buckets):
                 idx +=1
                 self.bucketattr[f'bucket_{idx}']['bucket'] = asdict(bucket)
-                call_plt = self.bucketattr[f'bucket_{idx}']['call_plt'] = PlotextPlot(id=f"call_plot_{idx}", classes='tickplots')
-                put_plt = self.bucketattr[f'bucket_{idx}']['put_plt'] = PlotextPlot(id=f"put_plot_{idx}", classes='tickplots')
+                spot_plt = self.bucketattr[f'bucket_{idx}']['spot_plt'] = PlotextPlot(
+                    id=f"spot_plot_{idx}", classes='spottickplot'
+                )
+                
+                call_plt = self.bucketattr[f'bucket_{idx}']['call_plt'] = PlotextPlot(
+                    id=f"call_plot_{idx}", classes='calltickplots'
+                )
+                
+                put_plt = self.bucketattr[f'bucket_{idx}']['put_plt'] = PlotextPlot(
+                    id=f"put_plot_{idx}", classes='puttickplots'
+                )                
                 with TabPane(f"Bucket_{idx}"):
                     with Container(id=f"dashboard_{idx}",classes='dashboards'):
-                        with Vertical(
+                        with Container(
                             id=f"market_data_container",classes='data_containers'
                         ) as self.bucketattr[f'bucket_{idx}']['data_container']:
+                            yield spot_plt
                             yield call_plt
                             yield put_plt
                         yield Static(id="order_pane")
@@ -196,87 +201,54 @@ class TradingTUI(App):
     async def tick_processor(self):
         
         def parse_data(tick):
-            if isinstance(tick, Tick):
-                ltp = f"[bold green]{tick.ltpc.ltp}[/]"
-                oi = tick.oi
-                lts = pd.to_datetime(tick.timestamp).strftime("%H:%M")
-                vol = tick.ohlc_1m.volume
-                open_price = tick.ohlc_1m.open
-                high_price = tick.ohlc_1m.high
-                low_price = tick.ohlc_1m.low
-                close_price = tick.ohlc_1m.close
-                market_open = tick.market_open
-                row = SimpleNamespace(oi=oi,
-                    vol=vol,
-                    ltp=int(ltp),
-                    lts=lts,
-                    open_price=open_price,
-                    high_price=high_price,
-                    low_price=low_price,
-                    close_price=close_price,
-                    market_open=market_open,
-                )
+            try:
+                
+                lts_raw = getattr(tick, 'timestamp', getattr(tick, 'lts', None))
+                lts = pd.to_datetime(lts_raw).strftime("%H:%M") if lts_raw else "00:00"
+                close_price = getattr(tick, 'close', getattr(tick, 'close_price', None))            
+                ltp = getattr(tick, 'ltp', None)
+                
+                if ltp is None:
+                    ltp = close_price
 
-            elif isinstance(tick, (Candle, SimpleNamespace)):
-                ltp = tick.ltp if tick.ltp else tick.close
-                lts = pd.to_datetime(tick.timestamp).strftime("%H:%M")
-                oi = 0
-                vol = tick.volume 
-                open_price = tick.open
-                high_price = tick.high
-                low_price = tick.low
-                close_price = tick.close
                 row = SimpleNamespace(
-                    oi=oi,
-                    vol=vol,
+                    oi=getattr(tick, 'oi', 0),
+                    vol=getattr(tick, 'volume', getattr(tick, 'vol', 0)),
                     ltp=ltp,
                     lts=lts,
-                    open_price=open_price,
-                    high_price=high_price,
-                    low_price=low_price,
+                    open_price=getattr(tick, 'open', getattr(tick, 'open_price', close_price)),
+                    high_price=getattr(tick, 'high', getattr(tick, 'high_price', close_price)),
+                    low_price=getattr(tick, 'low', getattr(tick, 'low_price', close_price)),
                     close_price=close_price,
+                    market_open=getattr(tick, 'market_open', True)
                 )
                 return row
+            except Exception as e:
+                raise ValueError(f"Parser failed: {e}")
 
-        def gen_plot(
-            row: SimpleNamespace,
-            plt: PlotextPlot.plt,
-            plotdata: dict,
-            ts: list,
-            row_keys: list,
-        ):
-            # 1. Check if this tick belongs to a NEW minute or the CURRENT minute
+        def gen_plot(row, plt, plotdata, ts, row_keys):
             is_new_candle = (len(ts) == 0) or (row.lts != ts[-1])
 
             if is_new_candle:
-                # --- APPEND: Start a brand new candle ---
                 plotdata["Open"].append(row.open_price)
                 plotdata["High"].append(row.high_price)
                 plotdata["Low"].append(row.low_price)
-                plotdata["Close"].append(row.ltp) # The LTP is the current close
-                ts.append(row.lts) # Append the new timestamp
+                plotdata["Close"].append(row.ltp)
+                ts.append(row.lts) 
             else:
-                # --- UPDATE: "Breathe" the current candle ---
-                # Compare the tick's high/low with the current candle's high/low
                 plotdata["High"][-1] = max(plotdata["High"][-1], row.high_price)
                 plotdata["Low"][-1] = min(plotdata["Low"][-1], row.low_price)
                 plotdata["Close"][-1] = row.ltp
-                # We do NOT append to ts here, because we are still in the same minute
 
             plt.clear_data()
+            if not plotdata["High"] or not plotdata["Low"]: return
             
-            # Prevent plotting errors if data is empty
-            if not plotdata["High"] or not plotdata["Low"]:
-                return
-
-            # Dynamically set Y-axis limits
             plt.ylim(min(plotdata["Low"]) - 3, max(plotdata["High"]) + 3)
-
             x_indices = list(range(0, len(plotdata["Open"]), 1))
 
             if len(x_indices) > 0:
+                
                 plt.xlim(-1, len(x_indices))
-
                 row_key = plt.candlestick(
                     dates=x_indices,
                     data={
@@ -287,11 +259,10 @@ class TradingTUI(App):
                     },
                     colors=["white", "gray"], 
                 )
-                
-                # Dynamically scale the X-axis ticks so they don't overlap
                 step = max(1, len(x_indices) // 5)
                 plt.xticks(x_indices[::step], list(ts)[::step])
                 row_keys.append(row_key)
+
         try:
             if isinstance(self.tick_buffer, str):
                 self.context = zmq.asyncio.Context()
@@ -299,123 +270,131 @@ class TradingTUI(App):
                 self.socket.connect(self.tick_buffer)
                 self.socket.setsockopt_string(SUBSCRIBE, "")
 
+            # ... [Keep your existing Bucket attribute initialization here] ...
             for key,item in self.bucketattr.items():
+                spot_ins = item['bucket']['spot']
                 call_ins = item['bucket']['legs']["CE"]
                 put_ins = item['bucket']['legs']["PE"]
-                call_key = item['bucket']['legs']["CE"].key
-                put_key = item['bucket']['legs']["PE"].key
-                last_rows = {
-                    call_key: None,
-                    put_key: None,
-                }
+                spot_key = spot_ins.key
+                call_key = call_ins.key
+                put_key = put_ins.key
+                last_rows = {call_key: None, put_key: None}
                 put_plt = item['put_plt'].plt
                 call_plt = item['call_plt'].plt
-
-                for plt in [call_plt, put_plt]:
+                spot_plt = item['spot_plt'].plt
+                for plt in [call_plt, put_plt, spot_plt]:
                     plt.clear_color()
                     plt.frame(False)
 
-                call_plotdata = {
-                    "Open": deque(maxlen=40),
-                    "High": deque(maxlen=40),
-                    "Low": deque(maxlen=40),
-                    "Close": deque(maxlen=40),
-                }
-                call_ts = deque(maxlen=40)
-
-                for candle in call_ins.historical_candles:
-                    call_plotdata["Open"].append(candle.open)
-                    call_plotdata["High"].append(candle.high)
-                    call_plotdata["Low"].append(candle.low)
-                    call_plotdata["Close"].append(candle.close)
-                    call_ts.append(pd.to_datetime(candle.timestamp).strftime("%H:%M"))
-
-                put_plotdata = {
-                    "Open": deque(maxlen=40),
-                    "High": deque(maxlen=40),
-                    "Low": deque(maxlen=40),
-                    "Close": deque(maxlen=40),
-                }
-                put_ts = deque(maxlen=40)
-                for candle in put_ins.historical_candles:
-                    put_plotdata["Open"].append(candle.open)
-                    put_plotdata["High"].append(candle.high)
-                    put_plotdata["Low"].append(candle.low)
-                    put_plotdata["Close"].append(candle.close)
-                    put_ts.append(pd.to_datetime(candle.timestamp).strftime("%H:%M"))
-
-                item['call_key']=call_key
-                item['put_key']=put_key
-                item['last_rows']=last_rows
-                item['call_plotdata']=call_plotdata
-                item['call_ts']=call_ts
-                item['put_plotdata']=put_plotdata
-                item['put_ts']=put_ts
-                item['call_row_keys']=[]
-                item['put_row_keys']=[]
+                # Initialize plot data
+                item['spot_plotdata'] = {"Open": deque(maxlen=40), "High": deque(maxlen=40), "Low": deque(maxlen=40), "Close": deque(maxlen=40)}
+                item['call_plotdata'] = {"Open": deque(maxlen=40), "High": deque(maxlen=40), "Low": deque(maxlen=40), "Close": deque(maxlen=40)}
+                item['put_plotdata'] = {"Open": deque(maxlen=40), "High": deque(maxlen=40), "Low": deque(maxlen=40), "Close": deque(maxlen=40)}
+                item['spot_ts'] = deque(maxlen=40)
+                item['call_ts'] = deque(maxlen=40)
+                item['put_ts'] = deque(maxlen=40)
                 
+                # Pre-fill historicals
+                for candle in call_ins.historical_candles:
+                    item['call_plotdata']["Open"].append(candle.open)
+                    item['call_plotdata']["High"].append(candle.high)
+                    item['call_plotdata']["Low"].append(candle.low)
+                    item['call_plotdata']["Close"].append(candle.close)
+                    item['call_ts'].append(pd.to_datetime(candle.timestamp).strftime("%H:%M"))
+                    
+                for candle in put_ins.historical_candles:
+                    item['put_plotdata']["Open"].append(candle.open)
+                    item['put_plotdata']["High"].append(candle.high)
+                    item['put_plotdata']["Low"].append(candle.low)
+                    item['put_plotdata']["Close"].append(candle.close)
+                    item['put_ts'].append(pd.to_datetime(candle.timestamp).strftime("%H:%M"))
+
+                for candle in spot_ins.historical_candles:
+                    item['spot_plotdata']["Open"].append(candle.open)
+                    item['spot_plotdata']["High"].append(candle.high)
+                    item['spot_plotdata']["Low"].append(candle.low)
+                    item['spot_plotdata']["Close"].append(candle.close)
+                    item['spot_ts'].append(pd.to_datetime(candle.timestamp).strftime("%H:%M"))
+                    
+                item['spot_key'] = spot_key
+                item['call_key'] = call_key
+                item['put_key'] = put_key
+                item['last_rows'] = last_rows
+                item['call_row_keys'] = []
+                item['put_row_keys'] = []
+                item['spot_row_keys'] = []
+
             await asyncio.sleep(1)
+            
             while True:
                 await asyncio.sleep(0.01)
-                logger.info("tick awaited")
-                ticks: dict = await self.socket.recv_json()     
-                logger.info("tick recvd")
+                ticks = await self.socket.recv_json()     
+                
+                # WRAP THE LOOP IN A LOUD TRY BLOCK
                 try:
-                    for key, tick in ticks.items():
-                        tick = SimpleNamespace(**json.loads(tick))
-                        row = parse_data(tick)
-                        if any(val is None for val in vars(row).values()):
-                            continue
-                        for attrs in self.bucketattr.values():
-                            
-                            call_key = attrs["call_key"]
-                            put_key = attrs["put_key"]
-                            data_container = attrs["data_container"]
-                            last_rows = attrs["last_rows"]
-                            call_row_keys = attrs["call_row_keys"]
-                            put_row_keys = attrs["put_row_keys"]
-                            call_plt = attrs['call_plt']
-                            call_plotdata = attrs['call_plotdata'] 
-                            call_ts = attrs['call_ts']
-                            put_plt = attrs['put_plt']
-                            put_plotdata = attrs['put_plotdata']
-                            put_ts = attrs['put_ts']
-                            market_status = getattr(row,'market_open',None)
-                            if market_status is not None and not market_status:
-                                self.log_pane.write("NSE_FO market is closed!.")
-                                data_container.border_subtitle = "Status:❗MARKET CLOSED"
-                                break
+                    if not isinstance(ticks, dict):
+                        self.log_pane.write(f"[red]Expected Dict, got {type(ticks)}[/]")
+                        continue
 
-
-                            if (
-                                last_rows.get(call_key) is not None
-                                or last_rows.get(put_key) is not None
-                                and not self.simulating
-                            ):
-                                data_container.border_subtitle = "Status: ✅ Connected"
-
-                            if row == last_rows.get(key):
-                                logger.debug("Skipped updating identical ticks.")
+                    for key, tick_raw in ticks.items():
+                        try:
+                            # Safely load JSON or dict
+                            if isinstance(tick_raw, str):
+                                tick_obj = SimpleNamespace(**json.loads(tick_raw))
+                            else:
+                                tick_obj = SimpleNamespace(**tick_raw)
+                                
+                            row = parse_data(tick_obj)
+                            # Catch missing OHLC data explicitly
+                            if row.open_price is None or row.close_price is None:
+                                self.log_pane.write(f"[yellow]Skipping {key}: Missing OHLC data -> {vars(row)}[/]")
                                 continue
-                            last_rows[key] = row
+                                
+                            matched_any = False
+                            for attrs in self.bucketattr.values():
+                                call_key = attrs["call_key"]
+                                put_key = attrs["put_key"]
+                                spot_key = attrs['spot_key']
+                                if getattr(row, 'market_open', True) is False:
+                                    attrs["data_container"].border_subtitle = "Status: ❗MARKET CLOSED"
+                                    continue
 
-                            if key == call_key:
-                                gen_plot(
-                                    row, call_plt.plt, call_plotdata, call_ts, call_row_keys
-                                )
-                            elif key == put_key:
-                                gen_plot(row, put_plt.plt, put_plotdata, put_ts, put_row_keys)
+                                attrs["data_container"].border_subtitle = "Status: ✅ Connected"
+
+                                if row == attrs["last_rows"].get(key):
+                                    continue
+                                    
+                                attrs["last_rows"][key] = row
+
+                                if key == call_key:
+                                    gen_plot(row, attrs['call_plt'].plt, attrs['call_plotdata'], attrs['call_ts'], attrs['call_row_keys'])
+                                    attrs['call_plt'].refresh()
+                                    matched_any = True
+                                elif key == put_key:
+                                    gen_plot(row, attrs['put_plt'].plt, attrs['put_plotdata'], attrs['put_ts'], attrs['put_row_keys'])
+                                    attrs['put_plt'].refresh()
+                                    matched_any = True
+                                elif key == spot_key:
+                                    gen_plot(row, attrs['spot_plt'].plt, attrs['spot_plotdata'], attrs['spot_ts'], attrs['spot_row_keys'])
+                                    attrs['spot_plt'].refresh()
+                                    matched_any = True
+                                    
+                            if not matched_any:
+                                logger.info(f"Tick ignored. Key '{key}' doesn't match INDEX/CE/PE targets.")
+                                
+                        except Exception as inner_err:
+                            logger.exception(f"{inner_err}")
+                            with self.suspend():
+                                breakpoint(header=f"{inner_err}")
+                            self.log_pane.write(f"[red]Error parsing tick {key}: {inner_err}[/]")
                             
-                            call_plt.refresh()
-                            put_plt.refresh()
-
-
-                except Exception as e:
-                    logger.exception(f"Error processing tick data: {e}")
-                    self.log_pane.write(f"[red]Tick processor error: {e}")
+                except Exception as loop_err:
+                    self.log_pane.write(f"[bold red]Loop Error: {loop_err}[/]")
 
         except Exception as e:
-            logger.exception(f"Error in tick processor {e}")
+            logger.exception(f"Fatal Tick Processor Error: {e}")
+            if hasattr(self, 'log_pane'):
+                self.log_pane.write(f"[bold red]FATAL TICK PROCESSOR ERROR: {e}[/]")
 
     @work(exit_on_error=True)
     async def portfolio_streamer(self):
@@ -484,6 +463,7 @@ class TradingTUI(App):
 
             item['data_container'].border_title = "MARKET DATA"
             item['data_container'].border_subtitle = "Status: ⭕ Not connected"
+            item['spot_plt'].border_title = f"INDEX: {item['bucket']['spot'].key}"
             item['call_plt'].border_title = f"CALL: {item['bucket']['legs']['CE'].key}"
             item['put_plt'].border_title = f"PUT: {item['bucket']['legs']['PE'].key}"
 

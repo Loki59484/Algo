@@ -216,7 +216,7 @@ class Tick:
             logger.debug("Parsing tick")
             market_data = feed.get("marketFF", {})
             if not market_data:
-                logger.warning("Market data not available.")
+                logger.warning(f"Market data not available for {key}.")
                 return None
 
             # EXTRACTING MARKET DATA
@@ -238,7 +238,7 @@ class Tick:
                     ohlc_1d_obj = Candle.load_ohlc(ohlc=item, ltpc=ltpc)
                 elif interval == "I1":
                     ohlc_1m_obj = Candle.load_ohlc(ohlc=item, ltpc=ltpc)
-
+            logger.info(f"Tick parsed successfully for {key}")
             return cls(
                 key=key,
                 timestamp=to_ist(int(timestamp)),

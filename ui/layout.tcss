@@ -45,17 +45,32 @@ Footer,Header {
     border: round cyan;
     background: black; 
     height: 100%;
+    
+    /* ADDED GRID LAYOUT */
+    layout: grid;
+    grid-size: 2 2; /* 2 columns, 2 rows */
+    grid-rows: 1fr 1fr; /* Top row and bottom row get equal height */
+    grid-columns: 1fr 1fr; /* Left and right get equal width */
+}
+
+.spottickplot {
+    column-span: 2; /* Stretches across both columns in the top row */
+    height: 100%;
+    width: 100%;
+    border-top: ascii cyan;
+    border-title-style: bold;
+    border-title-align: center;
+    background: black;
 }
 
 .calltickplots, .puttickplots {
-    height: 1fr;
+    height: 100%;
+    width: 100%;
     border-top: ascii cyan;    
     border-title-style: bold;
     border-title-align: center;
     background: black;
-    width: 1fr;
 }
-
 
 #analysis_console_container,#console_container {
     padding: 0;

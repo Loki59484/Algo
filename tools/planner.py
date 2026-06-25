@@ -51,8 +51,11 @@ class Planner:
         return parser.parse_args()
 
     def predict_days(self, net_target, gross_target, y1, a, force=False):
-        def profit(y,n):
-            return round(a * ((1 + a) ** n) * y)
+        def profit(y, n):
+            # Calculate standard compounded profit
+            calc_prof = round(a * ((1 + a) ** n) * y)
+            # Apply the 20,000 ceiling limit
+            return min(calc_prof, 20000)
 
         checkpoint_path = DATA_DIR / "target_checkpoints.json"
         
@@ -61,20 +64,23 @@ class Planner:
                 print("Creating a new plan...")
                 n = 0
                 
-                # Removed the Status array from initialization
                 pltdata = {'Days':[], 'Date':[], 'Profit':[], 'Remainder':[]}
                 
                 # 1. BUILD THE ROADMAP USING GROSS TARGET
                 x_nplus1 = round(gross_target)
                 
                 while x_nplus1 > 0:
-                    prof = profit(y1,n)
+                    prof = profit(y1, n)
+                    
+                    # Prevent overshooting the target on the final day
+                    if prof > x_nplus1:
+                        prof = x_nplus1
+                        
                     x_nplus1 -= prof # Deduct profit instantly for the end-of-day remainder
                     
                     pltdata["Profit"].append(prof)
                     pltdata["Remainder"].append(x_nplus1)
                     pltdata["Days"].append(n + 1) # Start visually at Day 1
-                    
                     n += 1
 
                 trading_dates = self.generate_trading_dates(n)
@@ -168,7 +174,7 @@ class Planner:
             self.starting_amount = round(
                 funds["equity"]["available_margin"] - funds["equity"]["adhoc_margin"] + funds["equity"]["used_margin"] 
             )
-            self.starting_amount = 200000 #self.starting_amount if self.starting_amount > 0 else 30000
+            self.starting_amount = 100000 #self.starting_amount if self.starting_amount > 0 else 30000
 
         except TypeError:
             self.starting_amount = self.prev_starting
@@ -207,7 +213,7 @@ class Planner:
 
         # 2. Establish the NET TARGET (Where you are right now after today's P&L)
         net_target = round(gross_target - self.pnl, 2)
-        self.target = net_target  # Update class attribute for the UI
+        self.target = net_target = gross_target = 6000000  # Update class attribute for the UI
 
         # 3. Pass BOTH to the predictor
         force_flag = True if self.prev_days == 0 else args.force
@@ -218,10 +224,10 @@ class Planner:
         print("="*75)
         print("📊 TRADING PLAN REPORT")
         print("="*75)
-        print(f"Target Remaining       : ₹{self.target}")
-        print(f"Day's Starting Amount  : ₹{self.starting_amount}")
-        print(f"Today's Planned Target : ₹{self.chronological_target}")
-        print(f"Today's Current P&L    : ₹{self.pnl}")
+        print(f"Target Remaining              : ₹{self.target}")
+        print(f"Day's Starting Amount         : ₹{self.starting_amount}")
+        print(f"Today's Planned Target        : ₹{self.chronological_target}")
+        print(f"Today's Current P&L           : ₹{self.pnl}")
         
         # Format the surplus dynamically
         if self.surplus > 0:
@@ -231,14 +237,18 @@ class Planner:
         else:
             surplus_text = "₹0.0 (Exactly on track)"
             
-        print(f"Performance Surplus    : {surplus_text}")
-        print(f"Projected Days Left    : {self.days_remaining} days")
+        print(f"Performance Surplus           : {surplus_text}")
+        print(f"Projected Trading Days Left   : {self.days_remaining} days")
         
         if self.df_plan is not None and not self.df_plan.empty:
             final_date = self.df_plan.iloc[-1]["Date"]
             # Convert string back to a readable format
             final_date_obj = dt.datetime.strptime(final_date, "%Y-%m-%d")
-            print(f"Projected Target Date  : {final_date_obj.strftime('%d %B %Y')}")
+            # Subtract the dates and extract just the integer '.days'
+            days_left = (final_date_obj.date() - dt.datetime.today().date()).days
+            
+            print(f"Projected Normal Days Left    : {days_left} days")
+            print(f"Projected Target Date         : {final_date_obj.strftime('%d %B %Y')}")
         print("="*75)
 
     def generate_trading_dates(self, num_days, start_date=None):

@@ -429,7 +429,7 @@ class LiveBroker(Broker):
             price=price,
             sandbox=sandbox,
             order_type='LIMIT',
-            validity='IOC'
+            validity='IOC',
             **kwargs,
         )
 
@@ -443,7 +443,7 @@ class LiveBroker(Broker):
             price=price,
             sandbox=sandbox,
             order_type="LIMIT",
-            validity="IOC"
+            validity="IOC",
             **kwargs,
         )
 
