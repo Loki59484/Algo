@@ -133,25 +133,29 @@ class Planner:
             df.to_json(checkpoint_path)
             self.df_plan = df
             self.days_remaining = int(p_days_str)
-            
-            # --- SURPLUS & CHRONOLOGICAL TRACKING ---
             today_str = dt.datetime.today().date().strftime("%Y-%m-%d")
             
-            if today_str in df["Date"].values:
-                today_row = df[df["Date"] == today_str].iloc[0]
-                self.chronological_target = today_row["Profit"]
-                planned_remainder = today_row["Remainder"]
+            # Find the row corresponding to today OR the earliest upcoming trading day
+            upcoming_days = df[df["Date"] >= today_str]
+            
+            if not upcoming_days.empty:
+                # Use the first available date (either today or the next market open)
+                target_row = upcoming_days.iloc[0]
+                self.chronological_target = target_row["Profit"]
+                planned_remainder = target_row["Remainder"]
+
             else:
-                # Fallback if checking on a weekend/holiday
-                self.chronological_target = df['Profit'].iloc[next_idx]
-                planned_remainder = df['Remainder'].iloc[next_idx]
+                # If we passed the end of the plan, use the final day's values
+                target_row = df.iloc[-1]
+                self.chronological_target = target_row["Profit"]
+                planned_remainder = target_row["Remainder"]
                 
             # 3. CALCULATE SURPLUS USING NET TARGET
+            # (Note: Use the remainder BEFORE completing the current target day)
             self.surplus = round(planned_remainder - net_target, 2)
             
             # Print cleanly without index numbers and without truncating to 10 rows
             if __name__ == '__main__':
-                # UPDATED: Included Cumulative_Profit in the markdown output
                 print(df[["Days", "Date", "Profit", "Cumulative_Profit", "Remainder", "Status"]].to_markdown(index=False))
             return df
             
@@ -213,8 +217,7 @@ class Planner:
 
         # 2. Establish the NET TARGET (Where you are right now after today's P&L)
         net_target = round(gross_target - self.pnl, 2)
-        self.target = net_target = gross_target = 6000000  # Update class attribute for the UI
-
+        self.target = net_target = gross_target = 6000000 - self.pnl # Update class attribute for the UI
         # 3. Pass BOTH to the predictor
         force_flag = True if self.prev_days == 0 else args.force
         return self.predict_days(net_target, gross_target, self.starting_amount, args.multiplier, force_flag)
