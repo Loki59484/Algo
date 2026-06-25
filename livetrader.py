@@ -104,10 +104,19 @@ def place_buy_order(
             return -1
 
         status = trader.broker.buy_order(key=opt_leg.key, price=buy_price, qty=qty)
-        if status is None:
+        
+        # 1. Safely check if the Upstox API actually accepted the order
+        if status is None or status.get("status") != "success":
+            logger.error(f"Order failed or rejected by API: {status}")
             return -1
 
-        pos, ord_id = status[0], status[1]
+        # 2. Parse the Order ID from the JSON dictionary
+        ord_id = status["data"]["order_ids"][0]
+        
+        # 3. Create a state-tracking object for the live position
+        from types import SimpleNamespace
+        pos = SimpleNamespace(instrument_key=opt_leg.key)
+        
         bucket.open_position = pos
 
         bucket.open_position.target = buy_price + (active_params["target_atr"] * atr)
