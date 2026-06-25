@@ -86,3 +86,24 @@ Footer,Header {
     height: 1fr;
 }
 
+#console_row {
+    height: 100%;
+    width: 100%;
+}
+
+.indicator_plots {
+    width: 25%;
+    height: 100%;
+    border: round cyan;
+    background: black;
+    border-title-style: bold;
+    border-title-align: center;
+}
+
+#console_container {
+    width: 75%; /* Shrunk from 100% to fit the indicators */
+    padding: 0;
+    background: black;
+    border: round cyan;
+    scrollbar-gutter: auto;
+}

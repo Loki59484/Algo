@@ -15,7 +15,7 @@ from textual.widgets import (
 )
 from textual.events import Key
 from textual.constants import TEXTUAL_ANIMATIONS
-from textual.containers import Vertical, Container
+from textual.containers import Vertical, Container, Horizontal
 from types import SimpleNamespace
 from textual_plotext import PlotextPlot
 import textual_pandas as tpd
@@ -61,6 +61,7 @@ class TradingTUI(App):
         }
         self.context: zmq.asyncio.Context | None = None
         self.socket: zmq.asyncio.Context.socket | None = None
+        
         self.bucketattr: defaultdict = defaultdict(dict )
         self.cmd_history_idx= 0
         self.cmd_history = []
@@ -86,10 +87,12 @@ class TradingTUI(App):
                 put_plt = self.bucketattr[f'bucket_{idx}']['put_plt'] = PlotextPlot(
                     id=f"put_plot_{idx}", classes='puttickplots'
                 )                
+                ind_plt = self.bucketattr[f'bucket_{idx}']['ind_plt'] = PlotextPlot(id=f"ind_plot_{idx}", classes='indicator_plots')
+
                 with TabPane(f"Bucket_{idx}"):
                     with Container(id=f"dashboard_{idx}",classes='dashboards'):
                         with Container(
-                            id=f"market_data_container",classes='data_containers'
+                            id="market_data_container",classes='data_containers'
                         ) as self.bucketattr[f'bucket_{idx}']['data_container']:
                             yield spot_plt
                             yield call_plt
@@ -97,12 +100,14 @@ class TradingTUI(App):
                         yield Static(id="order_pane")
                         yield Static(id="funds_pane")
 
-                        with Vertical(id="console_container"):
-                            yield RichLog(
-                                id="bash_log",
-                                highlight=True,
-                                markup=True,
-                            )
+                        with Horizontal(id="console_row"):
+                            with Vertical(id="console_container"):
+                                yield RichLog(
+                                    id="bash_log",
+                                    highlight=True,
+                                    markup=True,
+                                )
+                            yield ind_plt # Drops in the new vertical bars on the left
                         yield Static(id="position_pane")
 
             with TabPane("Analysis", id="trade_analysis"):
@@ -323,7 +328,10 @@ class TradingTUI(App):
                 item['call_row_keys'] = []
                 item['put_row_keys'] = []
                 item['spot_row_keys'] = []
-
+                ind_plt = item['ind_plt'].plt
+                for plt in [call_plt, put_plt, ind_plt]:
+                    plt.clear_color()
+                    plt.frame(False)
             await asyncio.sleep(1)
             
             while True:
@@ -378,7 +386,33 @@ class TradingTUI(App):
                                     gen_plot(row, attrs['spot_plt'].plt, attrs['spot_plotdata'], attrs['spot_ts'], attrs['spot_row_keys'])
                                     attrs['spot_plt'].refresh()
                                     matched_any = True
-                                    
+
+                            # Extract indicators (defaulting to 0 if not yet calculated)
+                            rsi_val = getattr(row, 'RSI_14', getattr(tick_obj, 'RSI_14', 0))
+                            adx_val = getattr(row, 'ADX_14', getattr(tick_obj, 'ADX_14', 0))
+                            
+                            bbu = getattr(row, 'BBU_20_2.0', getattr(tick_obj, 'BBU_20_2.0_2.0', 0))
+                            bbl = getattr(row, 'BBL_20_2.0', getattr(tick_obj, 'BBL_20_2.0_2.0', 0))
+                            spot_close = row.close_price
+                            bb_width_raw = ((bbu - bbl) / spot_close) if spot_close > 0 else 0
+                            
+                            # 3. Scale BB Width by 1000 for the UI (0.068 becomes 68)
+                            bb_val_scaled = bb_width_raw * 1000
+                            
+                            # 4. Determine Colors 
+                            # (Note: BB Width turns green when it is BELOW the 0.068 threshold)
+                            rsi_color = "white" if rsi_val >= 45 else "gray"
+                            adx_color = "white" if adx_val >= 20 else "gray"
+                            bb_color = "white" if 0 < bb_width_raw < 0.068 else "gray"
+                            
+                            # 5. Draw the chart
+                            ind_plt_widget = attrs['ind_plt']
+                            p = ind_plt_widget.plt
+                            p.clear_data()
+                            p.bar(["RSI", "ADX", "BBw"], [rsi_val, adx_val, bb_val_scaled], color=[rsi_color, adx_color, bb_color])
+                            p.ylim(0, 100)
+                            ind_plt_widget.refresh()
+
                             if not matched_any:
                                 logger.info(f"Tick ignored. Key '{key}' doesn't match INDEX/CE/PE targets.")
                                 
