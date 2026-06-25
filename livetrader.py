@@ -357,45 +357,43 @@ async def execute_live(
         return
 
     # ---------------------------------------------------------
-    # 2. GENERATE NEW SIGNALS (INSTANT ENTRIES)
+    # 2. GENERATE NEW SIGNALS (CANDLE CLOSE EXECUTIONS)
     # ---------------------------------------------------------
     curr_time = timestamp.time()
-
-    # Standard market cut-off for Intraday (No mid-morning blackouts)
+    
+    # Standard market cut-off for Intraday
     if curr_time > dt.time(15, 10):
         return
 
-    ce_cond, pe_cond = _evaluate_signals(spot_row, spot_prev, ACTIVE_PARAMS)
-
-    if ce_cond:
-        logger.info(
-            f"[{gear_name}] SIGNAL FIRED (CE): Routing Market Order INSTANTLY..."
-        )
-        place_buy_order(
-            call_option,
-            ce_row,
-            bucket,
-            trader,
-            ACTIVE_PARAMS,
-            spot_row,
-            gear_name,
-            timestamp,
-        )
-    elif pe_cond:
-        logger.info(
-            f"[{gear_name}] SIGNAL FIRED (PE): Routing Market Order INSTANTLY..."
-        )
-        place_buy_order(
-            put_option,
-            pe_row,
-            bucket,
-            trader,
-            ACTIVE_PARAMS,
-            spot_row,
-            gear_name,
-            timestamp,
-        )
-
+    # 1. Identify the current minute boundary
+    current_minute = timestamp.replace(second=0, microsecond=0)
+    
+    # 2. THE MINUTE LOCK: Only evaluate once per new minute candle
+    if getattr(bucket, 'last_signal_minute', None) != current_minute:
+        
+        # Ensure we have enough data to look back safely
+        if len(spot_df) >= 3:
+            
+            # 3. Shift evaluation back by one full candle. 
+            # spot_row is moving. spot_closed is the fully closed 1-min candle.
+            spot_closed = spot_df.iloc[-2]
+            spot_older = spot_df.iloc[-3]
+            
+            # 4. Evaluate the indicators exactly like the backtester
+            ce_cond, pe_cond = _evaluate_signals(spot_closed, spot_older, ACTIVE_PARAMS)
+            
+            if ce_cond or pe_cond:
+                # Lock this minute so we don't fire again until the next candle
+                bucket.last_signal_minute = current_minute
+                
+                # NOTE: We still pass ce_row/pe_row (the live candle) to place_buy_order 
+                # because we want to execute at the LIVE market price right now, not the past price.
+                if ce_cond:
+                    logger.info(f"[{gear_name}] SIGNAL FIRED (CE) on Candle Close! Routing Market Order...")
+                    place_buy_order(call_option, ce_row, bucket, trader, ACTIVE_PARAMS, spot_closed, gear_name, timestamp)
+                elif pe_cond:
+                    logger.info(f"[{gear_name}] SIGNAL FIRED (PE) on Candle Close! Routing Market Order...")
+                    place_buy_order(put_option, pe_row, bucket, trader, ACTIVE_PARAMS, spot_closed, gear_name, timestamp)
 
 def _manage_position_live(
     bucket,
