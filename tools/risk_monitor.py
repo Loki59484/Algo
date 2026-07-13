@@ -10,13 +10,15 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from core.upstox_methods import (
-    UpstoxClient,
-    logger,
-    AWS_TAILSCALE_IP,
-)  # Replace with your actual import
-from core.methods import start_heartbeat
+from core.upstox_methods import UpstoxClient, logger# Replace with your actual import
+from core.methods import start_heartbeat, ZMQErrorLogger
 from planner import Planner
+# After your existing logger setup...
+zmq_handler = ZMQErrorLogger(component_name="Live Trader", port=5568)
+zmq_handler.setFormatter(logging.Formatter('%(message)s')) # Keep it clean
+
+# Attach it to your root logger
+logging.getLogger().addHandler(zmq_handler)
 
 # Setup Logging
 planner = Planner()

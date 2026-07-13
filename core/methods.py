@@ -17,7 +17,29 @@ import threading
 # SET UP LOGGING
 logger = logging.getLogger(__name__)
 
+class ZMQErrorLogger(logging.Handler):
+    """Intercepts ERROR level logs and broadcasts them over ZMQ."""
+    def __init__(self, component_name: str, port: int):
+        super().__init__()
+        self.component_name = component_name
+        self.context = zmq.Context.instance()
+        # Create a dedicated PUB socket for logs
+        self.socket = self.context.socket(zmq.PUB)
+        self.socket.bind(f"tcp://0.0.0.0:{port}")
 
+    def emit(self, record):
+        # Only broadcast WARNING, ERROR, or CRITICAL logs
+        if record.levelno >= logging.WARNING:
+            try:
+                # Format the error (this includes tracebacks if it's an exception)
+                error_msg = self.format(record)
+                
+                # Prefix it so the dashboard knows how to parse it
+                # Format: "ERROR:Live Trader:ZeroDivisionError..."
+                self.socket.send_string(f"ERROR:{self.component_name}:{error_msg}")
+            except Exception:
+                self.handleError(record)
+                
 def start_heartbeat(component_name: str, port: int):
     """Starts a background thread that broadcasts a ping every second."""
     def ping_loop():

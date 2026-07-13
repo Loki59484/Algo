@@ -24,9 +24,16 @@ logger = logging.getLogger(__name__)
 # IMPORTING CUSTOM MODULES
 from core.datatypes import Instrument, Trade, Portfolio, Bucket, Funds, Tick
 from core.upstox_methods import UpstoxClient
-from core.methods import setup_cli, start_heartbeat
+from core.methods import setup_cli, start_heartbeat, ZMQErrorLogger
 from core import anatomy as ana
 from ui import tui
+
+
+zmq_handler = ZMQErrorLogger(component_name="Live Trader", port=5568)
+zmq_handler.setFormatter(logging.Formatter('%(message)s')) # Keep it clean
+
+# Attach it to your root logger
+logger.addHandler(zmq_handler)
 
 ustox = UpstoxClient()
 MATRIX_CACHE_DIR = Path(__file__).resolve().parent / "data" / "cache" / "matrices"

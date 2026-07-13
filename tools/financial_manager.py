@@ -264,41 +264,56 @@ class CFOTracker(App):
                     auto_scroll=True,
                 )
         yield Footer()
-    
+
+    def _log_remote_error(self, component: str, msg: str):
+        """Safely writes remote AWS errors to the RichLog in red."""
+        log_widget = self.query_one(RichLog)
+        log_widget.write(f"[bold red][{component} ALERT][/bold red] {msg}")
+
     @work(thread=True)
     def zmq_listener(self):
-        """Runs in the background, listening for ZMQ messages and updating timestamps."""
         import zmq
         import time
 
-        context = zmq.Context()
+        context = zmq.Context.instance()
         sub_socket = context.socket(zmq.SUB)
-
-        AWS_TAILSCALE_IP = "100.115.92.50" 
         
-        # Connect to all 3 ports (Data, Risk Monitor, Live Trader Heartbeat)
-        sub_socket.connect(f"tcp://{AWS_TAILSCALE_IP}:5556") # Main Data
-        sub_socket.connect(f"tcp://{AWS_TAILSCALE_IP}:5557") # Risk Monitor Heartbeat
-        sub_socket.connect(f"tcp://{AWS_TAILSCALE_IP}:5558") # Live Trader Heartbeat
+        # Connect to Heartbeat Ports
+        sub_socket.connect(f"tcp://{AWS_TAILSCALE_IP}:5557") 
+        sub_socket.connect(f"tcp://{AWS_TAILSCALE_IP}:5558") 
+        
+        # Connect to the NEW Error Log Ports
+        sub_socket.connect(f"tcp://{AWS_TAILSCALE_IP}:5567") 
+        sub_socket.connect(f"tcp://{AWS_TAILSCALE_IP}:5568") 
+        
         sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
         while True:
             try:
                 message = sub_socket.recv_string(flags=zmq.NOBLOCK)
+                
+                # Handle Heartbeats
                 if message.startswith("PING:"):
                     component_name = message.split(":")[1]
                     self.incoming_data[component_name] = time.time()
+                
+                # Handle Remote Errors
+                elif message.startswith("ERROR:"):
+                    # Split into exactly 3 parts: ["ERROR", "Live Trader", "The actual error text..."]
+                    parts = message.split(":", 2)
+                    if len(parts) == 3:
+                        component = parts[1]
+                        error_text = parts[2]
+                        # Safely route to the UI thread
+                        self.call_from_thread(self._log_remote_error, component, error_text)
+
             except zmq.Again:
                 time.sleep(0.1)
             except Exception as e:
-                # Use call_from_thread to safely write to the UI from a background thread
-                self.call_from_thread(self._log_zmq_error, str(e))
-                time.sleep(1) # Prevent spamming logs if it loops
-                
-    def _log_zmq_error(self, error_msg: str):
-        """Helper to safely write errors to the RichLog."""
-        self.query_one(RichLog).write(f"[red]ZMQ Error: {error_msg}[/red]")
-    
+                self.call_from_thread(self._log_remote_error, "System", str(e))
+                time.sleep(1) 
+
+                    
     def on_mount(self):
         # Check if file exists immediately on startup
         log = self.query_one(RichLog)
@@ -359,7 +374,6 @@ class CFOTracker(App):
         for name, data in self.system_components.items():
             # Read from the shared dictionary updated by the background thread
             last_ping = self.incoming_data.get(name, 0)
-            logger.info(f"{last_ping}")
             time_diff = current_time - last_ping
             row_key = data["row_key"]
             
@@ -369,7 +383,7 @@ class CFOTracker(App):
                 seen_text = "Just now"
             else:
                 status = "🔴 Offline"
-                seen_text = f"{int(time_diff)}s ago" if last_ping > 0 else "Never"
+                seen_text = f"{round(int(time_diff),-1)}s ago" if last_ping > 0 else "Never"
                 
             # Update the specific cells in the table
             monitor_table.update_cell(row_key, "Status", status)
