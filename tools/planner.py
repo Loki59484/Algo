@@ -171,7 +171,7 @@ class Planner:
                 self.prev_days = os.environ["prev_days"]= "0"
                 self.prev_starting = os.environ["prev_starting"]= "0"
 
-            funds = self.ustox.get_funds()
+            funds = 0#self.ustox.get_funds()
             position = self.ustox.get_positions()
             self.pnl = sum(item["realised"] for item in position)
             

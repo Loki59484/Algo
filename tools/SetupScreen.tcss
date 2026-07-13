@@ -1,0 +1,28 @@
+SetupScreen {
+    align: center middle
+}
+
+#data_grid {
+    grid-size:2 3;
+    height:15;
+}
+
+#setup_dialog {
+    width: 80;
+    height: 30;
+    border: thick cyan 10%;
+    background: $surface;
+}
+
+#control_container {
+    width: 100%;
+    height: 4;
+    layout: horizontal;
+    align: center middle;
+}
+.control_buttons {
+    background:cyan;
+    width:20;
+}
+
+.setup-input {margin-bottom: 1;}

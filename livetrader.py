@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # IMPORTING CUSTOM MODULES
 from core.datatypes import Instrument, Trade, Portfolio, Bucket, Funds, Tick
-from core.upstox_methods import UpstoxClient
+from core.upstox_methods import UpstoxClient, AWS_TAILSCALE_IP
 from core.methods import setup_cli, to_ist
 from core import anatomy as ana
 from ui import tui
@@ -31,7 +31,11 @@ from ui import tui
 ustox = UpstoxClient()
 MATRIX_CACHE_DIR = Path(__file__).resolve().parent / "data" / "cache" / "matrices"
 MATRIX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
+if AWS_TAILSCALE_IP is not None:
+    import zmq
+    context = zmq.Context()
+    ui_socket = context.socket(zmq.PUB)
+    ui_socket.bind(f"tcp://{AWS_TAILSCALE_IP}:5556")
 print(
     "--------------------HYBRID LIVE TRADING ENGINE--------------------".center(
         shutil.get_terminal_size().columns

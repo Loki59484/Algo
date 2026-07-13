@@ -1,0 +1,102 @@
+/* --- Top Section: Dashboard --- */
+
+.balance-box {
+    border: solid green;
+    height: 5;
+    width: 1fr;
+    content-align: center middle;
+    border-title-align: center;
+}
+
+.alert {
+    border: solid red;
+}
+
+#dashboard {
+    height: 7;
+    margin-bottom: 1;
+    border: round cyan;
+    border-title-color: cyan;
+}
+
+#data_grid {
+    grid-size: 2 2;
+    width: 75%;
+    min-height: 15;
+    margin-bottom: 1;
+}
+
+#division_plot {
+    width: 1fr;
+    height: 100%;
+    border: round cyan;
+}
+
+#history {
+    width: 1fr;
+    height: 100%;
+    border: solid cyan;
+    background:$background;
+}
+
+#investments { 
+    border: solid cyan;
+
+}
+
+#monitor {
+    border: round cyan;
+}
+
+#activity_log {
+    padding: 1;
+    background:black;
+}
+
+#log_container {
+    border: round cyan;
+
+}
+
+.data_panes {
+    width: 1fr;
+    height: 100%;
+    border: solid yellow;
+    padding: 1;
+}
+
+#controls {
+    height: 3;
+    margin: 1 0;
+    layout: horizontal;
+}
+
+#amount_input {
+    margin-left: 1;
+    width: 30;
+}
+
+Button {
+    margin-left: 1;
+    height:3;
+}
+
+
+#trees_container {
+    height:95%;
+
+}
+.trees {
+    background:$background;
+}
+
+#tree_control_buttons {
+}
+
+.tree_buttons {
+    border:none;
+    height:1;
+}
+#data_label, #plot_label {
+    margin-top: 1;
+}

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sys
+import zmq
 from pathlib import Path
 from datetime import datetime as dt
 # Setup paths based on your existing structure
@@ -8,8 +9,18 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from core.upstox_methods import UpstoxClient, logger  # Replace with your actual import
+from core.upstox_methods import UpstoxClient, logger, AWS_TAILSCALE_IP  # Replace with your actual import
 from planner import Planner
+
+# HEALTH CHECK
+# In your AWS scripts (e.g., livetrader.py)
+
+if AWS_TAILSCALE_IP is not None:
+    import zmq
+    context = zmq.Context()
+    ui_socket = context.socket(zmq.PUB)
+    ui_socket.bind(f"tcp://{AWS_TAILSCALE_IP}:5557")
+
 
 # Setup Logging
 planner = Planner()
