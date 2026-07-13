@@ -1103,13 +1103,4 @@ def main():
 
 if __name__ == "__main__":
     start_heartbeat(component_name='Live Trader', port=5558)
-    import time
-    import threading
-    def spam_fake_errors():
-        while True:
-            time.sleep(3) # Wait 3 seconds
-            # Intentionally log an error to trigger the ZMQ pipeline
-            logger.error("🚨 THIS IS A TEST ERROR FROM THE AWS SERVER 🚨")
-            
-    threading.Thread(target=spam_fake_errors, daemon=True).start()
     main()
