@@ -36,10 +36,11 @@ class ZMQErrorLogger(logging.Handler):
                 
                 # Prefix it so the dashboard knows how to parse it
                 # Format: "ERROR:Live Trader:ZeroDivisionError..."
+                logger.info("sending error to zmq {error_msg}")
                 self.socket.send_string(f"ERROR:{self.component_name}:{error_msg}")
             except Exception:
                 self.handleError(record)
-                
+
 def start_heartbeat(component_name: str, port: int):
     """Starts a background thread that broadcasts a ping every second."""
     def ping_loop():

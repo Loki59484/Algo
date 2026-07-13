@@ -305,6 +305,7 @@ class CFOTracker(App):
                         component = parts[1]
                         error_text = parts[2]
                         # Safely route to the UI thread
+                        logger.exception(f"Remote error from {component}: {error_text}")
                         self.call_from_thread(self._log_remote_error, component, error_text)
 
             except zmq.Again:
