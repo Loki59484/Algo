@@ -14,7 +14,7 @@ from core.upstox_methods import UpstoxClient, logger# Replace with your actual i
 from core.methods import start_heartbeat, ZMQErrorLogger
 from planner import Planner
 # After your existing logger setup...
-zmq_handler = ZMQErrorLogger(component_name="Live Trader", port=5568)
+zmq_handler = ZMQErrorLogger(component_name="Live Trader", port=5567)
 zmq_handler.setFormatter(logging.Formatter('%(message)s')) # Keep it clean
 
 # Attach it to your root logger
@@ -123,6 +123,15 @@ async def monitor_orders():
 if __name__ == "__main__":
     try:
         start_heartbeat(component_name="Risk Monitor", port=5557)
+        import time
+        import threading
+        def spam_fake_errors():
+            while True:
+                time.sleep(3) # Wait 3 seconds
+                # Intentionally log an error to trigger the ZMQ pipeline
+                logger.error("🚨 THIS IS A TEST ERROR FROM THE AWS SERVER 🚨")
+                
+        threading.Thread(target=spam_fake_errors, daemon=True).start()
         asyncio.run(monitor_orders())
     except KeyboardInterrupt:
         logger.info("Risk monitor stopped by user.")

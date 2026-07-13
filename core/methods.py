@@ -37,6 +37,7 @@ class ZMQErrorLogger(logging.Handler):
             try:
                 error_msg = self.format(record)
                 self.socket.send_string(f"ERROR:{self.component_name}:{error_msg}")
+                logger.info(f"Error msg sent : {error_msg}")
             except Exception:
                 self.handleError(record)
 
