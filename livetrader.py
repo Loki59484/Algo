@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # IMPORTING CUSTOM MODULES
 from core.datatypes import Instrument, Trade, Portfolio, Bucket, Funds, Tick
 from core.upstox_methods import UpstoxClient, AWS_TAILSCALE_IP
-from core.methods import setup_cli, to_ist
+from core.methods import setup_cli, start_heartbeat
 from core import anatomy as ana
 from ui import tui
 
@@ -1100,4 +1100,5 @@ def main():
 
 
 if __name__ == "__main__":
+    start_heartbeat(component_name='Live Trader', tailscale_ip=AWS_TAILSCALE_IP, port=5556)
     main()

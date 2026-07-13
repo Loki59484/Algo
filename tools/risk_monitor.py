@@ -10,16 +10,8 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from core.upstox_methods import UpstoxClient, logger, AWS_TAILSCALE_IP  # Replace with your actual import
+from core.methods import start_heartbeat
 from planner import Planner
-
-# HEALTH CHECK
-# In your AWS scripts (e.g., livetrader.py)
-
-if AWS_TAILSCALE_IP is not None:
-    import zmq
-    context = zmq.Context()
-    ui_socket = context.socket(zmq.PUB)
-    ui_socket.bind(f"tcp://{AWS_TAILSCALE_IP}:5557")
 
 
 # Setup Logging
@@ -103,6 +95,11 @@ async def monitor_orders():
 
 if __name__ == "__main__":
     try:
+
+        if AWS_TAILSCALE_IP is not None:
+            start_heartbeat(component_name="Risk Monitor", port=5557, tailscale_ip=AWS_TAILSCALE_IP)
+
         asyncio.run(monitor_orders())
+
     except KeyboardInterrupt:
         logger.info("Risk monitor stopped by user.")

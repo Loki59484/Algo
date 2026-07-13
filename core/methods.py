@@ -10,10 +10,35 @@ import logging
 import hashlib
 import json
 import datetime
+import zmq
+import time
+import threading
+
 # SET UP LOGGING
 logger = logging.getLogger(__name__)
 
 
+def start_heartbeat(component_name: str, port: int, tailscale_ip: str):
+    """
+    Starts a background thread that broadcasts a ping every second.
+    Runs as a daemon, so it automatically dies when your main script exits.
+    """
+    def ping_loop():
+        context = zmq.Context()
+        socket = context.socket(zmq.PUB)
+        
+        # Bind to the Tailscale IP on the specific port
+        socket.bind(f"tcp://{tailscale_ip}:{port}")
+        
+        while True:
+            # Send the exact string format your UI dashboard is expecting
+            socket.send_string(f"PING:{component_name}")
+            time.sleep(1) 
+
+    # Start the thread in the background
+    thread = threading.Thread(target=ping_loop, daemon=True)
+    thread.start()
+    return thread
 def generate_cache_key(date_str, params):
     """
     Creates a unique filename based on the exact parameters used.
