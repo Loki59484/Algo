@@ -291,7 +291,7 @@ class CFOTracker(App):
         while True:
             try:
                 message = sub_socket.recv_string(flags=zmq.NOBLOCK)
-                
+                logger.info(f"Recieved msg : {message}")
                 # Handle Heartbeats
                 if message.startswith("PING:"):
                     component_name = message.split(":")[1]

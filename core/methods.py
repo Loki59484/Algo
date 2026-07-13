@@ -23,20 +23,19 @@ class ZMQErrorLogger(logging.Handler):
         super().__init__()
         self.component_name = component_name
         self.context = zmq.Context.instance()
-        # Create a dedicated PUB socket for logs
         self.socket = self.context.socket(zmq.PUB)
+        
+        # FIX: Keep messages in memory for up to 2 seconds if the script crashes/exits
+        self.socket.setsockopt(zmq.LINGER, 5000)
+        # FIX: Buffer up to 1000 messages in case of a rapid burst of errors
+        self.socket.setsockopt(zmq.SNDHWM, 1000)
+        
         self.socket.bind(f"tcp://0.0.0.0:{port}")
 
     def emit(self, record):
-        # Only broadcast WARNING, ERROR, or CRITICAL logs
         if record.levelno >= logging.WARNING:
             try:
-                # Format the error (this includes tracebacks if it's an exception)
                 error_msg = self.format(record)
-                
-                # Prefix it so the dashboard knows how to parse it
-                # Format: "ERROR:Live Trader:ZeroDivisionError..."
-                logger.info("sending error to zmq {error_msg}")
                 self.socket.send_string(f"ERROR:{self.component_name}:{error_msg}")
             except Exception:
                 self.handleError(record)
