@@ -11,6 +11,7 @@ from collections import deque
 from typing import Literal, Optional
 from threading import Lock
 from pathlib import Path
+import inspect
 import urllib.parse
 import pandas as pd
 import socketserver
@@ -107,13 +108,6 @@ logger.addHandler(console_handler)
 
 api_lock = threading.Lock()
 # ------------------------------------------------------------#
-
-
-import inspect
-import time
-from threading import Lock
-from collections import deque
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -262,57 +256,68 @@ class UpstoxClient:
 
         logger.critical(f"Failed to fetch {url} after {max_retries} retries.")
         return None
-
-    def authorization(self):  # Log in to Upstox API
+    def authorization(self):  
         """
         Generates access token for a session through a browser and saves in a 'access_token.json' file for usage.
         """
+        import http.server
+        import socketserver
+        import urllib.parse
+        import threading
+        import time
+        from datetime import datetime, timedelta
+        import json
+        import getpass
+        from playwright.sync_api import sync_playwright, Error
+
+        # 1. State Dictionary: A thread-safe way to pass variables between nested functions
+        auth_state = {"code": None}
         server_ready_event = threading.Event()
-        server_stop_event = threading.Event()  # Event to signal the server to stop
-        PORT = 5000
+        
+        # 2. MATCH THE PORTS! Define it once, use it everywhere.
+        PORT = 5000 
         CALLBACK_PATH = "/callback"
+        redirect_uri = f"http://localhost:{PORT}{CALLBACK_PATH}"
 
         class OAuthRedirectHandler(http.server.SimpleHTTPRequestHandler):
             def do_GET(self):
-                global auth_code
                 parsed_url = urllib.parse.urlparse(self.path)
                 query_params = urllib.parse.parse_qs(parsed_url.query)
+                
+                # If we get the callback and it contains the code
                 if parsed_url.path == CALLBACK_PATH and "code" in query_params:
-                    auth_code = query_params.get("code", [None])[0]
+                    auth_state["code"] = query_params.get("code")[0]
                     self.send_response(200)
                     self.send_header("Content-type", "text/html")
                     self.end_headers()
-                    server_stop_event.set()  # Signal the main program that we've received the code
+                    self.wfile.write(b"<html><body><h1>Login successful! You can close this window.</h1></body></html>")
                 else:
                     self.send_response(404)
                     self.send_header("Content-type", "text/html")
                     self.end_headers()
 
-        def run_simple_server():
+            def log_message(self, format, *args):
+                # Suppress the default HTTP server logs to keep your terminal clean
+                pass
+
+        def run_simple_server(httpd):
             socketserver.TCPServer.allow_reuse_address = True
-            with socketserver.TCPServer(("", PORT), OAuthRedirectHandler) as httpd:
-                logger.info(
-                    f"Local HTTP server listening on http://localhost:{PORT}{CALLBACK_PATH}..."
-                )
-                server_ready_event.set()
-                while not server_stop_event.is_set():
-                    httpd.handle_request()  # Handle one request
-                    # Add a small sleep to prevent busy-waiting if no requests are coming
-                    time.sleep(0.1)
-                logger.info("Local HTTP server shutting down.")
-                httpd.shutdown()  # Cleanly shut down the server
+            logger.info(f"Local HTTP server listening on {redirect_uri}...")
+            server_ready_event.set()
+            httpd.serve_forever() # This runs continuously until httpd.shutdown() is called
 
         logger.info("Authorization initiated")
-        redirect_uri = "http://localhost:5000/callback"
         login_url = f"https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id={API_KEY}&redirect_uri={redirect_uri}"
-        server_thread = threading.Thread(target=run_simple_server, daemon=True)
+        
+        # 3. Start the Local Server
+        httpd = socketserver.TCPServer(("", PORT), OAuthRedirectHandler)
+        server_thread = threading.Thread(target=run_simple_server, args=(httpd,), daemon=True)
         server_thread.start()
-        server_ready_event.wait(
-            timeout=10
-        )  # Wait up to 10 seconds for server to be ready
+        
+        server_ready_event.wait(timeout=10)
         if not server_ready_event.is_set():
             logger.critical("Error: Local server did not start in time. Exiting.")
-            exit(1)
+            return
 
         def _run_playwright():
             try:
@@ -335,16 +340,21 @@ class UpstoxClient:
                     page.click("#continueBtn")
                     page.fill("#pinCode", getpass.getpass("Enter 6 digit PIN : "))
                     page.click("#pinContinueBtn")
+                    
+                    # Playwright will wait until our local server returns the 200 OK page
                     page.wait_for_url(f"{redirect_uri}*", timeout=15000)
                     browser.close()
 
-                token_url = "https://api.upstox.com/v2/login/authorization/token"  # Generating access token
+                # Extract the code saved by the HTTP Server
+                auth_code = auth_state.get("code")
+                if not auth_code:
+                    raise ValueError("Auth code was not captured by the local server!")
 
+                token_url = "https://api.upstox.com/v2/login/authorization/token"
                 token_headers = {
                     "accept": "application/json",
                     "Content-Type": "application/x-www-form-urlencoded",
                 }
-
                 token_data = {
                     "code": auth_code,
                     "client_id": API_KEY,
@@ -361,13 +371,10 @@ class UpstoxClient:
                     print("#" * 50, "LOGIN SUCCESSFUL", "#" * 50)
                     now = datetime.now()
                     if 0 <= now.hour < 3 or (now.hour == 3 and 0 <= now.minute <= 30):
-                        data["expiry"] = (
-                            f"{(now).replace(hour = 3,minute=30, second=0, microsecond = 0)}"
-                        )
+                        data["expiry"] = f"{(now).replace(hour=3,minute=30, second=0, microsecond=0)}"
                     else:
-                        data["expiry"] = (
-                            f"{(now+timedelta(days=1)).replace(hour = 3,minute=30, second=0, microsecond = 0)}"
-                        )
+                        data["expiry"] = f"{(now+timedelta(days=1)).replace(hour=3,minute=30, second=0, microsecond=0)}"
+                    
                     SECRETS_PATH.mkdir(parents=True, exist_ok=True)
                     with open(TOKEN_FILE, "w") as outputfile:
                         outputfile.write(json.dumps(data))
@@ -375,12 +382,14 @@ class UpstoxClient:
                         return data["access_token"]
 
             except Exception as e:
-                logger.exception("Error while getting access token. \n{e}")
+                logger.exception(f"Error while getting access token: {e}")
+            finally:
+                # 4. Guarantee server shutdown, even if an error occurs
+                httpd.shutdown()
+                httpd.server_close()
 
-        worker_thread = threading.Thread(target=_run_playwright)
-        worker_thread.start()
-        worker_thread.join()
-
+        # Run Playwright directly in the main thread (since httpd is running in the background daemon)
+        _run_playwright()
     def get_access_token(self):
         if TOKEN_FILE.exists():
             with open(TOKEN_FILE, "r+") as f:
@@ -979,7 +988,7 @@ class UpstoxClient:
                 )
 
     def get_brokerage(
-        self, price, instrument_key, quantity, transaction_type="BUY", product="D"
+        self, price, instrument_token, quantity, transaction_type="BUY", product="D"
     ) -> None:
         """
         Returns brokerage for a transaction
@@ -987,7 +996,7 @@ class UpstoxClient:
         url = "https://api.upstox.com/v2/charges/brokerage"
 
         params = {
-            "instrument_token": instrument_key,
+            "instrument_token": instrument_token,
             "quantity": quantity,
             "product": product,
             "transaction_type": transaction_type,
@@ -1037,7 +1046,7 @@ class UpstoxClient:
         from_date: datetime = datetime.today().date(),
         to_date: datetime = datetime.today().date(),
         segment="FO",
-        financial_year="2526",
+        financial_year="2627",
         pagenumber=1,
         pagesize=20,
     ):
@@ -1120,6 +1129,18 @@ class UpstoxClient:
         url = f"https://api.upstox.com/v2/market/holidays/{date}"
         response = self._make_request("GET", url)
 
+        if response:
+            data = response["data"]
+            return data
+        else:
+            print(
+                "Failed to retrieve data for holidays.",
+            )
+            return None
+
+    def get_order_book(self):
+        url = 'https://api.upstox.com/v2/order/retrieve-all'
+        response = self._make_request("GET",url)
         if response:
             data = response["data"]
             return data

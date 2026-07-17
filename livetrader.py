@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # IMPORTING CUSTOM MODULES
 from core.datatypes import Instrument, Trade, Portfolio, Bucket, Funds, Tick
 from core.upstox_methods import UpstoxClient
-from core.methods import setup_cli, start_heartbeat, ZMQErrorLogger
+from core.methods import setup_cli, start_heartbeat, ZMQErrorLogger, calculate_trade_charges
 from core import anatomy as ana
 from ui import tui
 
@@ -911,23 +911,9 @@ def setup_mode(args, trader: ana.Trader):
     trader.add_instrument(insts_dict)
     return insts_dict
 
-
 # =====================================================================
 # MAIN LOOP AND REPORTING
 # =====================================================================
-def calculate_options_charges(buy_price, sell_price, qty):
-    """Accurately calculates real-world taxes and slippage to find True Net PnL"""
-    buy_value = buy_price * qty
-    sell_value = sell_price * qty
-    total_value = buy_value + sell_value
-    brokerage = 40.0
-    stt = np.round(sell_value * 0.001)
-    txn_charge = total_value * 0.0003503
-    sebi_charge = total_value * 0.000001
-    stamp_duty = np.round(buy_value * 0.00003)
-    gst = (brokerage + txn_charge + sebi_charge) * 0.18
-    return brokerage + stt + txn_charge + sebi_charge + stamp_duty + gst
-
 
 def _print_trade_report(trader):
     """Generates the backtesting-style quantitative report at the end of the run."""
@@ -950,7 +936,7 @@ def _print_trade_report(trader):
             qty = getattr(t, "buy_qty", getattr(t, "Buy_qty", 0))
 
             trade_gross = (s_price - b_price) * qty
-            trade_charges = calculate_options_charges(b_price, s_price, qty)
+            trade_charges = calculate_trade_charges(b_price, s_price, qty)
             trade_net = trade_gross - trade_charges
 
             gross_pnl += trade_gross

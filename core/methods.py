@@ -3,6 +3,7 @@ Module containing custom functions exclusively used by the program.
 """
 
 import pyarrow.parquet as pq
+from typing import Literal
 from pathlib import Path
 import pyarrow as pa
 import pandas as pd
@@ -16,6 +17,102 @@ import threading
 
 # SET UP LOGGING
 logger = logging.getLogger(__name__)
+
+import numpy as np
+
+def calculate_trade_charges(buy_price, sell_price, qty, instrument:Literal['EQ','F','O']="O", trade_type: Literal['I', 'D']="D", return_breakdown=False):
+    """
+    Calculates charges based on Instrument (equity/futures/options) and Trade Type (intraday/delivery).
+    """
+    trade_map = {'I':'intraday','D':'delivery'}
+    instrument_map = {'EQ':'equity','F':'futures','O':'options'}
+    if trade_type in trade_map:
+        trade_type = trade_map[trade_type]
+    if instrument in instrument_map:
+        instrument = instrument_map[instrument]
+        
+    buy_value = buy_price * qty
+    sell_value = sell_price * qty
+    total_value = buy_value + sell_value
+
+    # ---------------------------------------------------------
+    # 1. BROKERAGE
+    # ---------------------------------------------------------
+    if instrument == 'options':
+        # Options is flat ₹20 regardless of intraday or overnight
+        brokerage = 40.0 # 20 buy + 20 sell
+    elif instrument == 'futures':
+        # Futures is ₹20 or 0.05%, regardless of intraday or overnight
+        brokerage = min(20.0, buy_value * 0.0005) + min(20.0, sell_value * 0.0005)
+    elif instrument == 'equity':
+        if trade_type == 'delivery':
+            brokerage = 40.0 # Flat ₹20 per executed order
+        else: # intraday
+            brokerage = min(20.0, buy_value * 0.001) + min(20.0, sell_value * 0.001)
+    else:
+        raise ValueError("Instrument must be 'equity', 'futures', or 'options'.")
+
+    # ---------------------------------------------------------
+    # 2. STT (Securities Transaction Tax)
+    # ---------------------------------------------------------
+    if instrument == 'options':
+        stt = np.round(sell_value * 0.001)
+    elif instrument == 'futures':
+        stt = np.round(sell_value * 0.0002)
+    elif instrument == 'equity':
+        if trade_type == 'delivery':
+            stt = np.round(buy_value * 0.001) + np.round(sell_value * 0.001)
+        else: # intraday
+            stt = np.round(sell_value * 0.00025)
+
+    # ---------------------------------------------------------
+    # 3. EXCHANGE TRANSACTION CHARGES (NSE)
+    # ---------------------------------------------------------
+    if instrument == 'options':
+        txn_charge = total_value * 0.000495   # 0.0495%
+    elif instrument == 'futures':
+        txn_charge = total_value * 0.0000188  # 0.00188%
+    elif instrument == 'equity':
+        txn_charge = total_value * 0.0000345  # 0.00345%
+
+    # ---------------------------------------------------------
+    # 4. SEBI CHARGES (Universal)
+    # ---------------------------------------------------------
+    sebi_charge = total_value * 0.000001 # ₹10 per crore
+
+    # ---------------------------------------------------------
+    # 5. STAMP DUTY (Charged on Buy Side Only)
+    # ---------------------------------------------------------
+    if instrument == 'options':
+        stamp_duty = np.round(buy_value * 0.00003)
+    elif instrument == 'futures':
+        stamp_duty = np.round(buy_value * 0.00002)
+    elif instrument == 'equity':
+        if trade_type == 'delivery':
+            stamp_duty = np.round(buy_value * 0.00015)
+        else: # intraday
+            stamp_duty = np.round(buy_value * 0.00003)
+
+    # ---------------------------------------------------------
+    # 6. GST (18% on Brokerage + Txn Charges + SEBI)
+    # ---------------------------------------------------------
+    gst = (brokerage + txn_charge + sebi_charge) * 0.18
+
+    # TOTAL CALCULATION
+    total_charges = brokerage + stt + txn_charge + sebi_charge + stamp_duty + gst
+    
+    if return_breakdown:
+        return {
+            "Brokerage": round(brokerage, 2),
+            "STT": round(stt, 2),
+            "Transaction Charge": round(txn_charge, 2),
+            "SEBI Charge": round(sebi_charge, 2),
+            "Stamp Duty": round(stamp_duty, 2),
+            "GST": round(gst, 2),
+            "Total": round(total_charges, 2)
+        }
+        
+    return round(total_charges, 2)
 
 class ZMQErrorLogger(logging.Handler):
     """Intercepts ERROR level logs and broadcasts them over ZMQ."""

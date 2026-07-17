@@ -55,7 +55,8 @@ class Planner:
             # Calculate standard compounded profit
             calc_prof = round(a * ((1 + a) ** n) * y)
             # Apply the 20,000 ceiling limit
-            return min(calc_prof, 20000)
+            #return min(calc_prof, 40000)
+            return calc_prof
 
         checkpoint_path = DATA_DIR / "target_checkpoints.json"
         
@@ -66,11 +67,14 @@ class Planner:
                 
                 pltdata = {'Days':[], 'Date':[], 'Profit':[], 'Remainder':[]}
                 
-                # 1. BUILD THE ROADMAP USING GROSS TARGET
                 x_nplus1 = round(gross_target)
                 
                 while x_nplus1 > 0:
                     prof = profit(y1, n)
+                    
+                    # --- EMERGENCY BRAKE ---
+                    if prof <= 0:
+                        raise ValueError(f"Calculated daily profit is {prof}. This will cause an infinite loop! Check starting amount and multiplier.")
                     
                     # Prevent overshooting the target on the final day
                     if prof > x_nplus1:
@@ -162,8 +166,8 @@ class Planner:
         except Exception:
             traceback.print_exc()
             return pd.DataFrame()
-
     def create(self, args):
+        default_starting = 500000
         try:
             if args.force:
                 self.previous_target = os.environ["previous_target"]= "0"
@@ -171,17 +175,24 @@ class Planner:
                 self.prev_days = os.environ["prev_days"]= "0"
                 self.prev_starting = os.environ["prev_starting"]= "0"
 
-            funds = 0#self.ustox.get_funds()
+            funds = 0 #self.ustox.get_funds()
             position = self.ustox.get_positions()
             self.pnl = sum(item["realised"] for item in position)
             
+            # This raises a TypeError because funds is 0
             self.starting_amount = round(
                 funds["equity"]["available_margin"] - funds["equity"]["adhoc_margin"] + funds["equity"]["used_margin"] 
             )
-            self.starting_amount = 100000 #self.starting_amount if self.starting_amount > 0 else 30000
+            self.starting_amount = default_starting #self.starting_amount if self.starting_amount > 0 else 30000
 
         except TypeError:
-            self.starting_amount = self.prev_starting
+            # Safely cast the environment variable, and strictly prevent 0.0
+            try:
+                self.starting_amount = float(self.prev_starting) if self.prev_starting else default_starting
+                if self.starting_amount <= 0:
+                    self.starting_amount = default_starting # Fallback default
+            except ValueError:
+                self.starting_amount = default_starting
 
         checkpoint_path = DATA_DIR / "target_checkpoints.json"
 
@@ -218,10 +229,16 @@ class Planner:
         # 2. Establish the NET TARGET (Where you are right now after today's P&L)
         net_target = round(gross_target - self.pnl, 2)
         self.target = net_target = gross_target = 6000000 - self.pnl # Update class attribute for the UI
-        # 3. Pass BOTH to the predictor
-        force_flag = True if self.prev_days == 0 else args.force
-        return self.predict_days(net_target, gross_target, self.starting_amount, args.multiplier, force_flag)
         
+        # 3. Pass BOTH to the predictor
+        # FIX 2: Convert prev_days to integer before comparing to 0
+        try:
+            prev_days_int = int(self.prev_days) if self.prev_days else 0
+        except ValueError:
+            prev_days_int = 0
+            
+        force_flag = True if prev_days_int == 0 else args.force
+        return self.predict_days(net_target, gross_target, self.starting_amount, args.multiplier, force_flag)
 
     def to_cli(self):
         print("="*75)
