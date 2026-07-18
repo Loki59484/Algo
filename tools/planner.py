@@ -1,280 +1,297 @@
-from dearpygui import dearpygui as dpg
-from dotenv import set_key
-from pprint import pprint
-from pathlib import Path
-import traceback
-import datetime as dt
-import pandas as pd
-import numpy as np
-import os, sys
 import argparse
+import datetime as dt
+import json
 import logging
-# Assuming config and path constants are handled in your environment
+import os
+import sys
+import traceback
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
+import numpy as np
+import pandas as pd
+from dotenv import set_key
+
+# Configure Paths
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from core.upstox_methods import DATA_DIR, ENV_PATH, UpstoxClient
+
 logger = logging.getLogger(__name__)
 
-from core.upstox_methods import UpstoxClient, DATA_DIR, ENV_PATH,ROOT_DIR
 
 class Planner:
+    """Manages trading plans, chronological targets, and CLI reporting."""
+    
+    DEFAULT_STARTING_AMOUNT = 500000.0
+    DEFAULT_LIFETIME_TARGET = 6000000.0
+
     def __init__(self):
         self.ustox = UpstoxClient()
+        self.checkpoint_path = DATA_DIR / "target_checkpoints.json"
         
-        self.target = 0.0
-        self.groww_pnl = 468045.54
-        self.starting_amount = 0.0
-        self.pnl = 0.0
-        
-        self.days_remaining = 0
-        self.df_plan = None
-        
-        # New attributes for chronological tracking
-        self.surplus = 0.0
-        self.chronological_target = 0.0
-        
-        self.previous_target = os.getenv("previous_target")
-        self.target_profit = os.getenv("target_profit")
-        self.prev_days = os.getenv("prev_days")
-        self.prev_starting = os.getenv("prev_starting")
+        # Path to the CFO Tracker's state file
+        self.cfo_state_file = ROOT_DIR / "tools" / "finance_state.json"
 
+        # Trading state
+        self.target: float = 0.0
+        self.groww_pnl: float = 468045.54
+        self.starting_amount: float = 0.0
+        self.pnl: float = 0.0
+        
+        # Plan state
+        self.df_plan: pd.DataFrame = pd.DataFrame()
+        self.days_remaining: int = 0
+        self.surplus: float = 0.0
+        self.chronological_target: float = 0.0
 
-    def setup_cli(self):
+        # Environment variables
+        self.previous_target: str = os.getenv("previous_target", "0")
+        self.target_profit: str = os.getenv("target_profit", "0")
+        self.prev_days: str = os.getenv("prev_days", "0")
+        self.prev_starting: str = os.getenv("prev_starting", "0")
+
+    def setup_cli(self) -> argparse.Namespace:
+        """Parses command line arguments."""
         parser = argparse.ArgumentParser(
             description="Launch Trading Planner",
             formatter_class=argparse.RawTextHelpFormatter,
         )
-        parser.add_argument('-f', '--force', action='store_true', help="Force create a new plan, ignoring existing checkpoints")
-        parser.add_argument('-m', '--multiplier', type=float, default=0.1, help="Multiplier for the target profit")
+        parser.add_argument(
+            "-f", "--force", action="store_true", help="Force create a new plan, ignoring existing checkpoints"
+        )
+        parser.add_argument(
+            "-m", "--multiplier", type=float, default=0.1, help="Multiplier for the target profit"
+        )
         return parser.parse_args()
 
-    def predict_days(self, net_target, gross_target, y1, a, force=False):
-        def profit(y, n):
-            # Calculate standard compounded profit
-            calc_prof = round(a * ((1 + a) ** n) * y)
-            # Apply the 20,000 ceiling limit
-            #return min(calc_prof, 40000)
-            return calc_prof
+    # -------------------------------------------------------------------------
+    # PLAN CREATION & LIFECYCLE
+    # -------------------------------------------------------------------------
+    
+    def create(self, args: argparse.Namespace) -> pd.DataFrame:
+        """Main entry point to establish the baseline and generate the plan."""
+        if args.force:
+            self._reset_environment_variables()
 
-        checkpoint_path = DATA_DIR / "target_checkpoints.json"
-        
-        try:
-            if not os.path.exists(checkpoint_path) or os.stat(checkpoint_path).st_size == 0 or force:
-                print("Creating a new plan...")
-                n = 0
-                
-                pltdata = {'Days':[], 'Date':[], 'Profit':[], 'Remainder':[]}
-                
-                x_nplus1 = round(gross_target)
-                
-                while x_nplus1 > 0:
-                    prof = profit(y1, n)
-                    
-                    # --- EMERGENCY BRAKE ---
-                    if prof <= 0:
-                        raise ValueError(f"Calculated daily profit is {prof}. This will cause an infinite loop! Check starting amount and multiplier.")
-                    
-                    # Prevent overshooting the target on the final day
-                    if prof > x_nplus1:
-                        prof = x_nplus1
-                        
-                    x_nplus1 -= prof # Deduct profit instantly for the end-of-day remainder
-                    
-                    pltdata["Profit"].append(prof)
-                    pltdata["Remainder"].append(x_nplus1)
-                    pltdata["Days"].append(n + 1) # Start visually at Day 1
-                    n += 1
+        # 1. Establish current live state
+        self.pnl = self._calculate_current_pnl()
+        self.starting_amount = self._calculate_starting_amount()
 
-                trading_dates = self.generate_trading_dates(n)
-                pltdata["Date"] = [d.strftime("%Y-%m-%d") for d in trading_dates]
-                
-                df = pd.DataFrame(pltdata)
-            else:
-                print("Following the current plan...")
-                df = pd.read_json(checkpoint_path)
-                
-            # Force standard string format to undo Pandas JSON parsing
-            df["Date"] = pd.to_datetime(df["Date"]).dt.strftime("%Y-%m-%d")
-            
-            # ---------------------------------------------------------
-            # NEW: CALCULATE CUMULATIVE PROFIT
-            # ---------------------------------------------------------
-            df["Cumulative_Profit"] = df["Profit"].cumsum()
-            
-            # 2. EVALUATE YOUR STATUS USING NET TARGET
-            df["Status"] = np.where(df["Remainder"] >= net_target, 1, 0)
-            current_idx_arr = df.index[df["Status"] == 1]
-            
-            # Handle the logic if 0 days are completed vs multiple days completed
-            if len(current_idx_arr) == 0:
-                # No days fully completed yet
-                curr_target_str = str(gross_target)
-                target_prof_str = str(df['Profit'].iloc[0])
-                p_days_str = str(len(df))
-                next_idx = 0
-            else:
-                # At least one day completed
-                current_idx = current_idx_arr[-1]
-                next_idx = min(current_idx + 1, len(df) - 1)
-                
-                curr_target_str = str(df['Remainder'].iloc[current_idx])
-                target_prof_str = str(df['Profit'].iloc[next_idx])
-                p_days_str = str(len(df) - (current_idx + 1))
-                
-            # Update env variables safely
-            self.previous_target = os.environ["previous_target"] = curr_target_str
-            self.target_profit = os.environ["target_profit"] = target_prof_str
-            self.prev_days = os.environ["prev_days"] = p_days_str
-            self.prev_starting = os.environ["prev_starting"] = f"{y1}"
-
-            set_key(ENV_PATH, "previous_target", self.previous_target)
-            set_key(ENV_PATH, "target_profit", self.target_profit)
-            set_key(ENV_PATH, "prev_days", self.prev_days)
-            set_key(ENV_PATH, "prev_starting", self.prev_starting)
-            
-            df.to_json(checkpoint_path)
-            self.df_plan = df
-            self.days_remaining = int(p_days_str)
-            today_str = dt.datetime.today().date().strftime("%Y-%m-%d")
-            
-            # Find the row corresponding to today OR the earliest upcoming trading day
-            upcoming_days = df[df["Date"] >= today_str]
-            
-            if not upcoming_days.empty:
-                # Use the first available date (either today or the next market open)
-                target_row = upcoming_days.iloc[0]
-                self.chronological_target = target_row["Profit"]
-                planned_remainder = target_row["Remainder"]
-
-            else:
-                # If we passed the end of the plan, use the final day's values
-                target_row = df.iloc[-1]
-                self.chronological_target = target_row["Profit"]
-                planned_remainder = target_row["Remainder"]
-                
-            # 3. CALCULATE SURPLUS USING NET TARGET
-            # (Note: Use the remainder BEFORE completing the current target day)
-            self.surplus = round(planned_remainder - net_target, 2)
-            
-            # Print cleanly without index numbers and without truncating to 10 rows
-            if __name__ == '__main__':
-                print(df[["Days", "Date", "Profit", "Cumulative_Profit", "Remainder", "Status"]].to_markdown(index=False))
-            return df
-            
-        except Exception:
-            traceback.print_exc()
-            return pd.DataFrame()
-    def create(self, args):
-        default_starting = 500000
-        try:
-            if args.force:
-                self.previous_target = os.environ["previous_target"]= "0"
-                self.target_profit = os.environ["target_profit"]= "0"
-                self.prev_days = os.environ["prev_days"]= "0"
-                self.prev_starting = os.environ["prev_starting"]= "0"
-
-            funds = 0 #self.ustox.get_funds()
-            position = self.ustox.get_positions()
-            self.pnl = sum(item["realised"] for item in position)
-            
-            # This raises a TypeError because funds is 0
-            self.starting_amount = round(
-                funds["equity"]["available_margin"] - funds["equity"]["adhoc_margin"] + funds["equity"]["used_margin"] 
-            )
-            self.starting_amount = default_starting #self.starting_amount if self.starting_amount > 0 else 30000
-
-        except TypeError:
-            # Safely cast the environment variable, and strictly prevent 0.0
-            try:
-                self.starting_amount = float(self.prev_starting) if self.prev_starting else default_starting
-                if self.starting_amount <= 0:
-                    self.starting_amount = default_starting # Fallback default
-            except ValueError:
-                self.starting_amount = default_starting
-
-        checkpoint_path = DATA_DIR / "target_checkpoints.json"
-
-        # 1. Establish the GROSS TARGET (Baseline roadmap)
-        if args.force or not os.path.exists(checkpoint_path) or os.stat(checkpoint_path).st_size == 0:
+        # 2. Establish gross target and fetch historical data
+        if args.force or not self.checkpoint_path.exists() or self.checkpoint_path.stat().st_size == 0:
             logger.info("Fetching lifetime history from Upstox API...")
-            gross_target = self.groww_pnl
+            report, charges = self._fetch_pnl_report()
             
-            report = []
-            charges = 0
-            
-            fyears = {
-                2025: {"code": "2526", "from_date": dt.datetime(2025, 4, 1).date(), "to_date": dt.datetime(2026, 3, 31).date()},
-                2026: {"code": "2627", "from_date": dt.datetime(2026, 4, 1).date(), "to_date": dt.datetime(2027, 3, 31).date()}
-            }
-            
-            for fyear, fyear_data in fyears.items():
-                size = 5000
-                report.extend(self.ustox.get_pnl_report(from_date=fyear_data["from_date"], to_date=fyear_data["to_date"], pagenumber=1, pagesize=size, financial_year=fyear_data["code"]))
-                charges += int(self.ustox.get_charges_report(from_date=fyear_data["from_date"], to_date=fyear_data["to_date"], financial_year=fyear_data["code"]))
-                
+            gross_target = self.groww_pnl + charges
             for item in report:
-                gross_target -= int(item["sell_amount"]) - int(float(item["buy_amount"]))
-                
-            gross_target += charges
+                gross_target -= int(item.get("sell_amount", 0)) - int(float(item.get("buy_amount", 0)))
             gross_target = round(gross_target)
-            
         else:
             logger.info("Loading baseline target from saved plan...")
-            df = pd.read_json(checkpoint_path)
+            df = pd.read_json(self.checkpoint_path)
+            report, _ = self._fetch_pnl_report() # Fetched to update Booked_PnL safely
             
-            gross_target = df['Remainder'].iloc[0] + df['Profit'].iloc[0]
+            self._update_booked_pnl(df, report)
+            gross_target = df["Remainder"].iloc[0] + df["Profit"].iloc[0]
 
-        # 2. Establish the NET TARGET (Where you are right now after today's P&L)
-        net_target = round(gross_target - self.pnl, 2)
-        self.target = net_target = gross_target = 6000000 - self.pnl # Update class attribute for the UI
-        
-        # 3. Pass BOTH to the predictor
-        # FIX 2: Convert prev_days to integer before comparing to 0
-        try:
-            prev_days_int = int(self.prev_days) if self.prev_days else 0
-        except ValueError:
-            prev_days_int = 0
-            
+        # 3. Establish net target from CFO dashboard settings
+        financial_target = self._get_financial_target()
+        self.target = net_target = gross_target = financial_target - self.pnl
+
+        # 4. Generate or update the plan
+        prev_days_int = int(self.prev_days) if self.prev_days else 0
         force_flag = True if prev_days_int == 0 else args.force
+        
         return self.predict_days(net_target, gross_target, self.starting_amount, args.multiplier, force_flag)
 
-    def to_cli(self):
-        print("="*75)
-        print("📊 TRADING PLAN REPORT")
-        print("="*75)
-        print(f"Target Remaining              : ₹{self.target}")
-        print(f"Day's Starting Amount         : ₹{self.starting_amount}")
-        print(f"Today's Planned Target        : ₹{self.chronological_target}")
-        print(f"Today's Current P&L           : ₹{self.pnl}")
-        
-        # Format the surplus dynamically
-        if self.surplus > 0:
-            surplus_text = f"+₹{self.surplus} (Ahead of plan 🚀)"
-        elif self.surplus < 0:
-            surplus_text = f"-₹{abs(self.surplus)} (Behind plan ⚠️)"
-        else:
-            surplus_text = "₹0.0 (Exactly on track)"
-            
-        print(f"Performance Surplus           : {surplus_text}")
-        print(f"Projected Trading Days Left   : {self.days_remaining} days")
-        
-        if self.df_plan is not None and not self.df_plan.empty:
-            final_date = self.df_plan.iloc[-1]["Date"]
-            # Convert string back to a readable format
-            final_date_obj = dt.datetime.strptime(final_date, "%Y-%m-%d")
-            # Subtract the dates and extract just the integer '.days'
-            days_left = (final_date_obj.date() - dt.datetime.today().date()).days
-            
-            print(f"Projected Normal Days Left    : {days_left} days")
-            print(f"Projected Target Date         : {final_date_obj.strftime('%d %B %Y')}")
-        print("="*75)
+    def predict_days(self, net_target: float, gross_target: float, capital: float, multiplier: float, force: bool = False) -> pd.DataFrame:
+        """Calculates compounded targets and evaluates plan status."""
+        try:
+            if not self.checkpoint_path.exists() or self.checkpoint_path.stat().st_size == 0 or force:
+                print("Creating a new plan...")
+                df = self._generate_compound_plan(gross_target, capital, multiplier)
+                
+                # ADDED: Instantly map today's PnL so the first CLI print is accurate
+                today_str = dt.datetime.today().date().strftime("%Y-%m-%d")
+                if today_str in df["Date"].values:
+                    df.loc[df["Date"] == today_str, "Booked_PnL"] = self.pnl
+            else:
+                print("Following the current plan...")
+                df = pd.read_json(self.checkpoint_path)
 
-    def generate_trading_dates(self, num_days, start_date=None):
+            df["Date"] = pd.to_datetime(df["Date"]).dt.strftime("%Y-%m-%d")
+            df["Cumulative_Profit"] = df["Profit"].cumsum()
+            
+            # Evaluate Status
+            df["Status"] = np.where(df["Remainder"] >= net_target, 1, 0)
+            
+            self._evaluate_current_position(df, gross_target, net_target, capital)
+            
+            df.to_json(self.checkpoint_path)
+            self.df_plan = df
+
+            if __name__ == "__main__":
+                print(df[["Days", "Date", "Profit", "Booked_PnL", "Cumulative_Profit", "Remainder", "Status"]].to_markdown(index=False))
+            
+            return df
+
+        except Exception as e:
+            logger.error(f"Error predicting days: {e}")
+            traceback.print_exc()
+            return pd.DataFrame()
+
+    # -------------------------------------------------------------------------
+    # PRIVATE HELPER METHODS
+    # -------------------------------------------------------------------------
+
+    def _get_financial_target(self) -> float:
+        """Reads the financial target from the CFO Tracker state, falls back to default if missing."""
+        try:
+            if self.cfo_state_file.exists() and self.cfo_state_file.stat().st_size > 0:
+                with open(self.cfo_state_file, "r") as f:
+                    state = json.load(f)
+                    # Get the target from json, defaulting to DEFAULT_LIFETIME_TARGET if key is missing
+                    return float(state.get("target", self.DEFAULT_LIFETIME_TARGET))
+        except (json.JSONDecodeError, ValueError, IOError) as e:
+            logger.warning(f"Could not read target from {self.cfo_state_file.name}: {e}. Using default.")
+            
+        return self.DEFAULT_LIFETIME_TARGET
+
+    def _generate_compound_plan(self, gross_target: float, capital: float, multiplier: float) -> pd.DataFrame:
+        """Generates the day-by-day mathematical trading plan."""
+        n = 0
+        # ADDED: Booked_PnL to the schema
+        pltdata = {"Days": [], "Date": [], "Profit": [], "Booked_PnL": [], "Remainder": []}
+        x_nplus1 = round(gross_target)
+        
+        while x_nplus1 > 0:
+            prof = round(multiplier * ((1 + multiplier) ** n) * capital)
+            
+            if prof <= 0:
+                raise ValueError(f"Calculated daily profit is {prof}. Check starting amount and multiplier.")
+            
+            prof = min(prof, x_nplus1) # Prevent overshooting
+            x_nplus1 -= prof
+            
+            pltdata["Profit"].append(prof)
+            pltdata["Booked_PnL"].append(0.0) # ADDED: Initialize as 0.0
+            pltdata["Remainder"].append(x_nplus1)
+            pltdata["Days"].append(n + 1)
+            n += 1
+
+        trading_dates = self.generate_trading_dates(n)
+        pltdata["Date"] = [d.strftime("%Y-%m-%d") for d in trading_dates]
+        return pd.DataFrame(pltdata)
+
+    def _evaluate_current_position(self, df: pd.DataFrame, gross_target: float, net_target: float, capital: float) -> None:
+        """Determines the current day's target and surplus based on the live PnL."""
+        current_idx_arr = df.index[df["Status"] == 1]
+        
+        if len(current_idx_arr) == 0:
+            curr_target_str = str(gross_target)
+            target_prof_str = str(df["Profit"].iloc[0])
+            p_days_str = str(len(df))
+        else:
+            current_idx = current_idx_arr[-1]
+            next_idx = min(current_idx + 1, len(df) - 1)
+            curr_target_str = str(df["Remainder"].iloc[current_idx])
+            target_prof_str = str(df["Profit"].iloc[next_idx])
+            p_days_str = str(len(df) - (current_idx + 1))
+            
+        self._update_environment_variables(curr_target_str, target_prof_str, p_days_str, str(capital))
+        self.days_remaining = int(p_days_str)
+        
+        today_str = dt.datetime.today().date().strftime("%Y-%m-%d")
+        upcoming_days = df[df["Date"] >= today_str]
+        
+        target_row = upcoming_days.iloc[0] if not upcoming_days.empty else df.iloc[-1]
+        self.chronological_target = target_row["Profit"]
+        self.surplus = round(target_row["Remainder"] - net_target, 2)
+
+    def _fetch_pnl_report(self) -> Tuple[List[Dict[str, Any]], int]:
+        """Fetches historical PnL and charges from Upstox for relevant financial years."""
+        report = []
+        total_charges = 0
+        
+        fyears = {
+            2025: {"code": "2526", "start": dt.datetime(2025, 4, 1).date(), "end": dt.datetime(2026, 3, 31).date()},
+            2026: {"code": "2627", "start": dt.datetime(2026, 4, 1).date(), "end": dt.datetime(2027, 3, 31).date()}
+        }
+        
+        for fy, data in fyears.items():
+            report.extend(self.ustox.get_pnl_report(
+                from_date=data["start"], to_date=data["end"], pagenumber=1, pagesize=5000, financial_year=data["code"]
+            ))
+            total_charges += int(self.ustox.get_charges_report(
+                from_date=data["start"], to_date=data["end"], financial_year=data["code"]
+            ))
+            
+        return report, total_charges
+
+    def _update_booked_pnl(self, df: pd.DataFrame, report: List[Dict[str, Any]]) -> None:
+        """Updates the plan DataFrame with actual booked PnL history."""
+        if "Booked_PnL" not in df.columns:
+            df["Booked_PnL"] = 0.0
+
+        historical_pnl_map = {}
+        for item in report:
+            trade_date = item.get("date", "")[:10] 
+            trade_profit = int(item.get("sell_amount", 0)) - int(float(item.get("buy_amount", 0)))
+            if trade_date:
+                historical_pnl_map[trade_date] = historical_pnl_map.get(trade_date, 0) + trade_profit
+
+        df["Booked_PnL"] = df["Date"].map(historical_pnl_map).fillna(0.0)
+
+        today_str = dt.datetime.today().date().strftime("%Y-%m-%d")
+        if today_str in df["Date"].values:
+            df.loc[df["Date"] == today_str, "Booked_PnL"] = self.pnl
+            
+        df.to_json(self.checkpoint_path)
+
+    def _calculate_starting_amount(self) -> float:
+        """Safely calculates or falls back to a valid starting capital amount."""
+        try:
+            return self.DEFAULT_STARTING_AMOUNT
+        except (TypeError, KeyError):
+            try:
+                amt = float(self.prev_starting) if self.prev_starting else self.DEFAULT_STARTING_AMOUNT
+                return amt if amt > 0 else self.DEFAULT_STARTING_AMOUNT
+            except ValueError:
+                return self.DEFAULT_STARTING_AMOUNT
+
+    def _calculate_current_pnl(self) -> float:
+        """Fetches live positions to calculate today's realized PnL."""
+        positions = self.ustox.get_positions()
+        return sum(item.get("realised", 0.0) for item in positions)
+
+    def _update_environment_variables(self, curr_target: str, target_prof: str, prev_days: str, prev_start: str) -> None:
+        """Updates state parameters safely to memory and .env file."""
+        self.previous_target = os.environ["previous_target"] = curr_target
+        self.target_profit = os.environ["target_profit"] = target_prof
+        self.prev_days = os.environ["prev_days"] = prev_days
+        self.prev_starting = os.environ["prev_starting"] = prev_start
+
+        set_key(ENV_PATH, "previous_target", curr_target)
+        set_key(ENV_PATH, "target_profit", target_prof)
+        set_key(ENV_PATH, "prev_days", prev_days)
+        set_key(ENV_PATH, "prev_starting", prev_start)
+
+    def _reset_environment_variables(self) -> None:
+        """Resets the environment tracking variables to zero."""
+        self._update_environment_variables("0", "0", "0", "0")
+
+    # -------------------------------------------------------------------------
+    # UTILITIES & CLI OUTPUT
+    # -------------------------------------------------------------------------
+
+    def generate_trading_dates(self, num_days: int, start_date: dt.date = None) -> List[dt.date]:
+        """Generates a list of valid trading dates, skipping weekends and holidays."""
         holidays_path = ROOT_DIR / "holidays.json"
         
-        if os.path.exists(holidays_path) and os.path.getsize(holidays_path) != 0:
+        if holidays_path.exists() and holidays_path.stat().st_size != 0:
             holidays = pd.read_json(holidays_path)
         else:
             holidays = pd.DataFrame(self.ustox.get_holidays())
@@ -285,44 +302,40 @@ class Planner:
         
         valid_dates = []
         while len(valid_dates) < num_days:
-            # Check if weekend OR if date is in Upstox holiday list
             if current_date.weekday() <= 4 and current_date not in holiday_dates:
                 valid_dates.append(current_date)
             current_date += dt.timedelta(days=1)
             
         return valid_dates
 
-    def report_window(self, show=True):
-        def setup():
-            with dpg.font_registry():
-                with dpg.font(f"{self.ustox.directory}fonts/ProggyClean.ttf", 18) as defaultfont:
-                    dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
-                    
-            with dpg.window(tag="Report", show=show, height=300, width=500):
-                dpg.add_text(f"Target : {self.target}")
-                dpg.add_text(f"Groww target : {self.groww_pnl}")
-                dpg.add_text(f"Upstox target : {self.target - self.groww_pnl}")
-                dpg.add_text(f"Status : {max(0, self.previous_target - self.target)}")
-                dpg.add_text(f"Day's Target: {self.target_profit}")
-                dpg.add_text(f"Projected days: {self.days_remaining} days")
-                if self.projected_date:
-                    dpg.add_text(f"Projected date: {self.projected_date.date().strftime('%d %B %Y')}")
-                    
-            dpg.bind_item_font(item="Report", font=defaultfont)
-
-        dpg.create_context()
-        if not dpg.is_dearpygui_running():
-            try:
-                dpg.create_viewport(title="Report", resizable=True, height=300, width=500)
-                setup()
-                dpg.set_primary_window("Report", True) # Fixed: Mismatched window tag
-                dpg.setup_dearpygui()
-                dpg.show_viewport()
-                dpg.start_dearpygui()
-            except Exception as e:
-                print(f"An error occurred: {e}")
+    def to_cli(self) -> None:
+        """Prints a formatted terminal report of the current trading plan."""
+        print("=" * 75)
+        print("📊 TRADING PLAN REPORT")
+        print("=" * 75)
+        print(f"Target Remaining              : ₹{self.target:,.2f}")
+        print(f"Day's Starting Amount         : ₹{self.starting_amount:,.2f}")
+        print(f"Today's Planned Target        : ₹{self.chronological_target:,.2f}")
+        print(f"Today's Current P&L           : ₹{self.pnl:,.2f}")
+        
+        if self.surplus > 0:
+            surplus_text = f"+₹{self.surplus:,.2f} (Ahead of plan 🚀)"
+        elif self.surplus < 0:
+            surplus_text = f"-₹{abs(self.surplus):,.2f} (Behind plan ⚠️)"
         else:
-            setup()
+            surplus_text = "₹0.00 (Exactly on track)"
+            
+        print(f"Performance Surplus           : {surplus_text}")
+        print(f"Projected Trading Days Left   : {self.days_remaining} days")
+        
+        if self.df_plan is not None and not self.df_plan.empty:
+            final_date_str = self.df_plan.iloc[-1]["Date"]
+            final_date_obj = dt.datetime.strptime(final_date_str, "%Y-%m-%d").date()
+            days_left = (final_date_obj - dt.datetime.today().date()).days
+            
+            print(f"Projected Normal Days Left    : {days_left} days")
+            print(f"Projected Target Date         : {final_date_obj.strftime('%d %B %Y')}")
+        print("=" * 75)
 
 
 if __name__ == "__main__":
@@ -330,4 +343,3 @@ if __name__ == "__main__":
     args = planner.setup_cli()
     planner.create(args)
     planner.to_cli()
-    

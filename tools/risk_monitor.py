@@ -1,128 +1,177 @@
 import asyncio
+import datetime as dt
 import logging
 import sys
-import zmq
 from pathlib import Path
-from datetime import datetime as dt
+from typing import Any, Dict
 
-# Setup paths based on your existing structure
+# Setup paths based on existing structure
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from core.upstox_methods import UpstoxClient, logger# Replace with your actual import
-from core.methods import start_heartbeat, ZMQErrorLogger
+from core.methods import ZMQErrorLogger, start_heartbeat
+from core.upstox_methods import UpstoxClient, logger
 from planner import Planner
-# After your existing logger setup...
-zmq_handler = ZMQErrorLogger(component_name="Risk Monitor", port=5567)
-zmq_handler.setFormatter(logging.Formatter('%(message)s')) # Keep it clean
 
-# Attach it to your root logger
+# Configure ZMQ Error Logging
+zmq_handler = ZMQErrorLogger(component_name="Risk Monitor", port=5567)
+zmq_handler.setFormatter(logging.Formatter('%(message)s'))
 logging.getLogger().addHandler(zmq_handler)
 
-# Setup Logging
-planner = Planner()
-args = planner.setup_cli()
-plan = planner.create(args)
-today = dt.today().strftime("%Y-%m-%d")
-DAY_TARGET = plan.loc[plan["Date"] == today][
-    "Profit"
-].item()  # Your profit target in INR
-SURPLUS = 5000  # Additional amount to cover charges
-TARGET_THRESHOLD = DAY_TARGET + SURPLUS
-logger.info(f"Trading will stop at ₹{TARGET_THRESHOLD}")
 
+class RiskManager:
+    """Monitors live trades, places automated limit targets, and enforces kill switches."""
 
-async def monitor_orders():
-    ustox = UpstoxClient()
-    logger.info("Initializing 24/7 Upstox Risk Management Stream...")
-    data_queue = asyncio.Queue(maxsize=100)
+    # Configurable Constants
+    COST_BUFFER = 5000.0
+    TRADE_PROFIT_TARGET = 500.0
+    DEFAULT_MAX_LOSS = -5000.0
+    TICK_SIZE = 0.05
+    SLEEP_AFTER_KILL = 12 * 60 * 60  # 12 hours in seconds
 
-    ws_task = asyncio.create_task(ustox.subscribe_portfolio(output=data_queue))
+    def __init__(self):
+        self.ustox = UpstoxClient()
+        self.planner = Planner()
+        
+        # Risk Thresholds
+        self.day_target: float = 0.0
+        self.target_threshold: float = 0.0
+        self.max_loss_threshold: float = 0.0
 
-    # Define how much profit you want *per trade* (or use your DAY_TARGET)
-    TRADE_PROFIT_TARGET = 500
+    def initialize_thresholds(self) -> None:
+        """Syncs with the Planner to establish today's dynamic profit and loss limits."""
+        args = self.planner.setup_cli()
+        plan_df = self.planner.create(args)
+        today_str = dt.datetime.today().date().strftime("%Y-%m-%d")
 
-    try:
+        # 1. Check if today is a valid trading day
+        if today_str not in plan_df["Date"].values:
+            logger.warning(f"No trading scheduled for {today_str}. Market likely closed.")
+            logger.info("Exiting Risk Monitor.")
+            sys.exit(0)
+
+        # 2. Establish Profit Target
+        self.day_target = self.planner.chronological_target
+        self.target_threshold = self.day_target + self.COST_BUFFER
+
+        # 3. Establish Max Loss (Based on previous day's profit)
+        today_idx = plan_df.index[plan_df["Date"] == today_str].tolist()[0]
+        if today_idx > 0:
+            prev_day_profit = float(plan_df.iloc[today_idx - 1]["Profit"])
+            self.max_loss_threshold = -abs(prev_day_profit) 
+        else:
+            self.max_loss_threshold = self.DEFAULT_MAX_LOSS 
+
+        logger.info(f"Target acquired from Planner: ₹{self.day_target:,.2f}")
+        logger.info(f"Trading will STOP for profit at: ₹{self.target_threshold:,.2f} (Includes ₹{self.COST_BUFFER:,.2f} buffer)")
+        logger.info(f"Trading will STOP for loss at: ₹{self.max_loss_threshold:,.2f} (Previous day's target)")
+
+    async def start_monitoring(self) -> None:
+        """Main entry point for the async WebSocket monitor with robust reconnection."""
+        logger.info("Initializing 24/7 Upstox Risk Management Stream...")
+        
         while True:
-            logger.info("Awaiting update")
-            update = await data_queue.get()
+            data_queue = asyncio.Queue(maxsize=100)
+            ws_task = asyncio.create_task(self.ustox.subscribe_portfolio(output=data_queue))
 
-            # 1. Check if the event is a completed BUY order
-            if (
-                update.get("status") == "complete"
-                and update.get("transaction_type") == "BUY"
-            ):
+            try:
+                await self._process_stream(data_queue)
+            except asyncio.CancelledError:
+                logger.info("Monitor shutting down.")
+                ws_task.cancel()
+                raise
+            except Exception as e:
+                logger.exception(f"Stream encountered error: {e}. Reconnecting in 5s...")
+                ws_task.cancel()
+                await asyncio.sleep(5) # Safely loop back to the top to reconnect
 
-                # Extract execution details from the websocket payload
-                filled_qty = int(update.get("filled_quantity", 0))
-                avg_price = float(update.get("average_price", 0.0))
-                instrument = update.get("instrument_token")
-                product_type = update.get(
-                    "product", "D"
-                )  # E.g., 'I' for Intraday, 'D' for Delivery
-
-                if filled_qty > 0 and avg_price > 0:
-                    # 2. Calculate the exact Limit Price
-                    required_points = TRADE_PROFIT_TARGET / filled_qty
-                    raw_target_price = avg_price + required_points
-
-                    # 3. Round to the nearest 0.05 (Tick Size enforcement)
-                    target_price = round(raw_target_price * 20) / 20.0
-                    logger.info(
-                        f"BUY filled for {update['trading_symbol']} at ₹{avg_price}. "
-                        f"Sending SELL limit order at ₹{target_price} to hit ₹{TRADE_PROFIT_TARGET} target."
-                    )
-
-                    ustox.place_order(
-                        instrument_token=instrument,
-                        transaction_type="SELL",
-                        quantity=filled_qty,
-                        order_type="LIMIT",
-                        price=target_price,
-                        product="I" if product_type == "SCP" else product_type,
-                    )
-
-            # --- YOUR EXISTING PNL / KILL SWITCH LOGIC ---
-            elif (
-                update.get("status") == "complete"
-                and update.get("transaction_type") == "SELL"
-            ):
-                # Only check daily PnL after a SELL closes a position
-                current_pnl = sum(
-                    [float(item.get("realised", 0)) for item in ustox.get_positions()]
-                )
-                logger.info(f"Current Realized PnL: ₹{current_pnl}")
-
-                if current_pnl >= TARGET_THRESHOLD:
-                    logger.warning(
-                        f"🚨 TARGET REACHED (₹{current_pnl}). ACTIVATING KILL SWITCH! 🚨"
-                    )
-                    resp = ustox.kill_switch(["NSE_FO", "BSE_FO"], action="DISABLE")
-                    logger.info(f"{resp}")
-                    logger.info(
-                        "Kill switch activated successfully. Sleeping until tomorrow..."
-                    )
-                    await asyncio.sleep(60 * 60 * 12)
-
+    async def _process_stream(self, queue: asyncio.Queue) -> None:
+        """Consumes updates from the WebSocket queue."""
+        while True:
+            logger.info("Awaiting update...")
+            update: Dict[str, Any] = await queue.get()
+            
+            status = update.get("status")
+            txn_type = update.get("transaction_type")
+            
+            if status == "complete" and txn_type == "BUY":
+                self._process_buy_order(update)
+                
+            elif status == "complete" and txn_type == "SELL":
+                await self._evaluate_pnl_and_kill(update)
+                
             else:
-                logger.info(
-                    f"Update received for {update.get('trading_symbol', 'Unknown')} | status : {update.get('status')} "
-                )
+                logger.info(f"Update received for {update.get('trading_symbol', 'Unknown')} | status: {status}")
 
-    except asyncio.CancelledError:
-        logger.info("Monitor shutting down.")
-        ws_task.cancel()
-        raise
-    except Exception as e:
-        logger.exception(f"Encountered error: {e}. Reconnecting in 5s...")
-        ws_task.cancel()
-        await asyncio.sleep(5)
+    def _process_buy_order(self, update: Dict[str, Any]) -> None:
+        """Calculates and places the corresponding limit SELL order for a filled BUY."""
+        filled_qty = int(update.get("filled_quantity", 0))
+        avg_price = float(update.get("average_price", 0.0))
+        instrument = update.get("instrument_token")
+        product_type = update.get("product", "D")
+
+        if filled_qty <= 0 or avg_price <= 0:
+            return
+
+        # Calculate the exact Limit Price based on required points per quantity
+        required_points = self.TRADE_PROFIT_TARGET / filled_qty
+        raw_target_price = avg_price + required_points
+
+        # Round to the nearest valid tick size (0.05)
+        target_price = round(raw_target_price / self.TICK_SIZE) * self.TICK_SIZE
+        
+        logger.info(
+            f"BUY filled for {update.get('trading_symbol')} at ₹{avg_price:,.2f}. "
+            f"Sending SELL limit order at ₹{target_price:,.2f} to hit ₹{self.TRADE_PROFIT_TARGET} target."
+        )
+
+        self.ustox.place_order(
+            instrument_token=instrument,
+            transaction_type="SELL",
+            quantity=filled_qty,
+            order_type="LIMIT",
+            price=target_price,
+            product="I" if product_type == "SCP" else product_type,
+        )
+
+    async def _evaluate_pnl_and_kill(self, update: Dict[str, Any]) -> None:
+        """Evaluates daily realized PnL and triggers kill switches if thresholds are breached."""
+        # Calculate current net realized PnL
+        positions = self.ustox.get_positions()
+        current_pnl = sum(float(item.get("realised", 0.0)) for item in positions)
+        
+        logger.info(f"Current Realized PnL: ₹{current_pnl:,.2f}")
+
+        # Check thresholds
+        if current_pnl >= self.target_threshold:
+            await self._trigger_kill_switch(current_pnl, "PROFIT TARGET REACHED")
+            
+        elif current_pnl <= self.max_loss_threshold:
+            await self._trigger_kill_switch(current_pnl, "MAX LOSS REACHED - EMERGENCY")
+
+    async def _trigger_kill_switch(self, pnl: float, reason: str) -> None:
+        """Disables trading for the day and sleeps the async loop."""
+        logger.warning(f"🚨 {reason} (₹{pnl:,.2f}). ACTIVATING KILL SWITCH! 🚨")
+        
+        resp = self.ustox.kill_switch(["NSE_FO", "BSE_FO"], action="DISABLE")
+        logger.info(f"Kill switch response: {resp}")
+        logger.info(f"Trading halted successfully. Sleeping for {self.SLEEP_AFTER_KILL / 3600} hours...")
+        
+        # Suspend processing for the remainder of the session
+        await asyncio.sleep(self.SLEEP_AFTER_KILL)
 
 
 if __name__ == "__main__":
     try:
         start_heartbeat(component_name="Risk Monitor", port=5557)
-        asyncio.run(monitor_orders())
+        
+        manager = RiskManager()
+        manager.initialize_thresholds()
+        
+        asyncio.run(manager.start_monitoring())
+        
     except KeyboardInterrupt:
         logger.info("Risk monitor stopped by user.")
+    except Exception as e:
+        logger.exception(f"Fatal error in Risk Monitor execution: {e}")

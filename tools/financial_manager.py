@@ -102,65 +102,31 @@ class SetupScreen(ModalScreen[dict]):
         with Vertical(id="setup_dialog"):
             with Center():
                 yield Label(
-                    "[bold yellow]First time? Let's get you setup![/bold yellow]\nPlease enter your starting balances:\n",
+                    "[bold yellow]Corporate Setup initialization[/bold yellow]\nPlease establish your company parameters:\n",
                 )
                 with Grid(id="data_grid"):
-                    yield Input(
-                        placeholder="Name (e.g., John Doe)",
-                        id="init_user",
-                        classes="setup-input",
-                    )
-                    yield Input(
-                        placeholder="Current Debt (e.g., 1900000)",
-                        id="init_debt",
-                        classes="setup-input",
-                    )
-                    yield Input(
-                        placeholder="Trading Capital (e.g., 1000000)",
-                        id="init_capital",
-                        classes="setup-input",
-                    )
-                    yield Input(
-                        placeholder="Financial Target (e.g., 2000000)",
-                        id="init_target",
-                        classes="setup-input",
-                    )
-                    yield Input(
-                        placeholder="Savings/Buffer (e.g., 400000)",
-                        id="init_savings",
-                        classes="setup-input",
-                    )
-                    yield Input(
-                        placeholder="Paycut Ratio (e.g., 0.1)",
-                        id="init_paycut",
-                        classes="setup-input",
-                    )
+                    yield Input(placeholder="Name", id="init_user", classes="setup-input")
+                    yield Input(placeholder="Current Debt (e.g., 1900000)", id="init_debt", classes="setup-input")
+                    yield Input(placeholder="AUM (e.g., 1000000)", id="init_capital", classes="setup-input")
+                    yield Input(placeholder="Financial Target (e.g., 2000000)", id="init_target", classes="setup-input")
+                    yield Input(placeholder="Savings (e.g., 400000)", id="init_savings", classes="setup-input")
+                    yield Input(placeholder="Expected Base Pay (e.g., 50000/month)", id="init_base_pay", classes="setup-input")
 
             with Center():
                 with Horizontal(id="control_container"):
-                    yield Button(
-                        "Save & Start",
-                        id="btn_save_setup",
-                        variant="success",
-                        classes="control_buttons",
-                    )
-                    yield Button(
-                        "Fetch from Upstox",
-                        id="btn_fetch_upstox",
-                        variant="success",
-                        classes="control_buttons",
-                    )  # fetches available data from upstox
+                    yield Button("Establish Corporation", id="btn_save_setup", variant="success", classes="control_buttons")
+                    yield Button("Fetch from Upstox", id="btn_fetch_upstox", variant="success", classes="control_buttons") 
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()
         if event.button.id == "btn_save_setup":
             try:
-                # Retrieve inputs, defaulting to 0 if left blank
                 debt_val = self.query_one("#init_debt", Input).value
                 capital_val = self.query_one("#init_capital", Input).value
                 savings_val = self.query_one("#init_savings", Input).value
                 target_val = self.query_one("#init_target", Input).value
-                paycut_ratio = self.query_one("#init_paycut", Input).value
+                base_pay_val = self.query_one("#init_base_pay", Input).value # NEW
+                
                 new_state = {
                     "user": self.query_one("#init_user", Input).value or "User",
                     "debt": float(debt_val) if debt_val else 0.0,
@@ -168,37 +134,36 @@ class SetupScreen(ModalScreen[dict]):
                     "savings": float(savings_val) if savings_val else 0.0,
                     "unrealized_profit": 0.0,
                     "target": float(target_val) if target_val else 0.0,
-                    "paycut_ratio": float(paycut_ratio) if paycut_ratio else 0.5,
+                    "base_pay": float(base_pay_val) if base_pay_val else 50000.0, # NEW
                 }
-                # Dismiss the modal and return the new state to the main app
                 self.dismiss(new_state)
             except ValueError:
-                # If they type non-numbers, we can just replace the label text to warn them
-                self.query_one(Label).update(
-                    "[bold red]Error: Please enter valid numbers![/bold red]"
-                )
+                self.query_one(Label).update("[bold red]Error: Please enter valid numbers![/bold red]")
 
         if event.button.id == "btn_fetch_upstox":
             try:
-                # capital: Funds = Funds.update_from_json(ustox.get_funds())
-                # available = capital.available_margin
-                capital_val = self.query_one("#init_capital", Input)
-                capital_val.replace(capital_val, 30000)
+                capital_input = self.query_one("#init_capital", Input)
+                capital_input.value = "30000"
             except Exception:
-                self.query_one(Label).update(
-                    "[bold red]Error in fetching upstox data. Please enter manually.[/bold red]"
-                )
+                self.query_one(Label).update("[bold red]Error in fetching upstox data. Please enter manually.[/bold red]")
 
 
 class CFOTracker(App):
     TITLE = "Algo's Personal CFO"
     CSS_PATH = "cfo_tracker.tcss"
 
+    BINDINGS = [
+        ("ctrl+q", "quit", "Quit the Application")
+    ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._is_shutting_down = False
+
     def compose(self) -> ComposeResult:
 
         yield Header()
 
-        # Container for available funds in different catagories
         with Container(id="dashboard"):
             with Horizontal():
                 yield Static(id="debt_display", classes="balance-box alert")
@@ -206,7 +171,7 @@ class CFOTracker(App):
                 yield Static(id="savings_display", classes="balance-box")
                 yield Static(id="profit_display", classes="balance-box")
                 yield Static(id="target_display", classes="balance-box")
-                yield Static(id="paycut_ratio", classes="balance-box")
+                yield Static(id="base_pay_display", classes="balance-box")
 
         # Grid to show other related data
         with Horizontal():
@@ -251,18 +216,23 @@ class CFOTracker(App):
 
                         with Horizontal(id="tree_control_buttons"):
                             yield Button(label="Expand All", id="btn_toggle_collapsibles", classes="tree_buttons")
-
                 with Static(id="monitor", classes="data_panes"):
                     yield DataTable(id="system_status_table")
+                    
+    
 
-            with Container(id="log_container"):
-                yield RichLog(
-                    id="activity_log",
-                    highlight=True,
-                    markup=True,
-                    max_lines=100,
-                    auto_scroll=True,
-                )
+            with Vertical():
+                with Container(id="log_container"):
+                    yield RichLog(
+                        id="activity_log",
+                        highlight=True,
+                        markup=True,
+                        max_lines=100,
+                        auto_scroll=True,
+                    )
+                yield Static(id="package")
+                    
+                
         yield Footer()
 
     def _log_remote_error(self, component: str, msg: str):
@@ -288,36 +258,25 @@ class CFOTracker(App):
         
         sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
-        while True:
+        while not self._is_shutting_down:
             try:
                 message = sub_socket.recv_string(flags=zmq.NOBLOCK)
                 logger.info(f"Recieved msg : {message}")
-                # Handle Heartbeats
-                if message.startswith("PING:"):
-                    component_name = message.split(":")[1]
-                    self.incoming_data[component_name] = time.time()
-                
-                # Handle Remote Errors
-                elif message.startswith("ERROR:"):
-                    # Split into exactly 3 parts: ["ERROR", "Live Trader", "The actual error text..."]
-                    parts = message.split(":", 2)
-                    if len(parts) == 3:
-                        component = parts[1]
-                        error_text = parts[2]
-                        # Safely route to the UI thread
-                        logger.exception(f"Remote error from {component}: {error_text}")
-                        self.call_from_thread(self._log_remote_error, component, error_text)
+                # ... [Keep your existing message handling logic here] ...
 
             except zmq.Again:
                 time.sleep(0.1)
             except Exception as e:
                 self.call_from_thread(self._log_remote_error, "System", str(e))
-                time.sleep(1) 
+                time.sleep(1)
+                
+        sub_socket.close()
+        context.term()
 
-                    
     def on_mount(self):
-        # Check if file exists immediately on startup
         log = self.query_one(RichLog)
+        
+        # Check if file exists immediately on startup
         if not STATE_FILE.exists() or STATE_FILE.stat().st_size <= 0:
             # If no file, push the setup screen and wait for the callback
             self.push_screen(SetupScreen(), self.init_state_callback)
@@ -325,18 +284,25 @@ class CFOTracker(App):
             # File exists, load normally
             self.state = self.load_state()
             self.update_ui()
+            # ADD IT HERE INSTEAD
+            log.write(
+                f"[bold cyan]Hello {self.state.get('user', 'User')}, This is your personal CFO![/bold cyan]"
+            )
+            
         self.query_one("#dashboard", Container).border_title = "Financial Summary"
         self.query_one("#division_plot", Pie).border_title = "Division of Funds"
         self.query_one("#history", Static).border_title = "Recents"
         self.query_one("#investments", Static).border_title = "Current Investments"
         self.query_one("#monitor", Static).border_title = "System Monitor"
         self.query_one("#log_container", Container).border_title = "Logs"
+        self.query_one("#package", Static).border_title = "Financial Package"
 
         monitor_table = self.query_one("#system_status_table", DataTable)
-        monitor_table.cursor_type = "none" # Hide the selection cursor# ADD THESE LINES:
+        monitor_table.cursor_type = "none" 
         monitor_table.add_column("Component", key="Component")
         monitor_table.add_column("Status", key="Status")
         monitor_table.add_column("Last Seen", key="Last Seen")        
+        
         self.system_components = {
             "Live Trader": {"row_key": monitor_table.add_row("Live Trader", "🔴 Offline", "Never")},
             "Risk Monitor": {"row_key": monitor_table.add_row("Risk Monitor", "🔴 Offline", "Never")},
@@ -354,18 +320,18 @@ class CFOTracker(App):
         
         # 3. Start the UI updater loop (every 1 second)
         self.set_interval(1.0, self.check_heartbeats)
-        log.write(
-            f"[bold cyan]Hello {self.state.get('user', 'User')}, This is your personal CFO![/bold cyan]"
-        )
+        
+        # REMOVED log.write(...) FROM HERE
 
     def init_state_callback(self, new_state: dict):
         """Called automatically when the SetupScreen is dismissed."""
         self.state = new_state
         self.save_state()
         self.update_ui()
-        self.query_one(RichLog).write(
-            "[bold green]Initial setup complete. Data saved![/bold green]"
-        )
+        
+        log = self.query_one(RichLog)
+        log.write("[bold green]Corporate setup complete. Data initialized![/bold green]")
+        log.write(f"[bold cyan]Hello {self.state.get('user', 'User')}, This is your personal CFO![/bold cyan]")
     
     def check_heartbeats(self):
         """Timer task that updates the DataTable with live statuses."""
@@ -403,32 +369,43 @@ class CFOTracker(App):
         if hasattr(self, "state"):
 
             self.query_one("#debt_display", Static).update(
-                f"Debt\n₹{self.state['debt']:,.2f}"
+                f"Corporate Debt\n₹{self.state['debt']:,.2f}"
             )
             self.query_one("#capital_display", Static).update(
-                f"Trading Capital\n₹{self.state['trading_capital']:,.2f}"
+                f"AUM (Trading Capital)\n₹{self.state['trading_capital']:,.2f}"
             )
             self.query_one("#savings_display", Static).update(
-                f"Savings (Buffer)\n₹{self.state['savings']:,.2f}"
+                f"Treasury (Buffer)\n₹{self.state['savings']:,.2f}"
             )
             self.query_one("#profit_display", Static).update(
-                f"Unsplit Monthly Profit\n₹{self.state['unrealized_profit']:,.2f}"
+                f"Unrealized Alpha\n₹{self.state['unrealized_profit']:,.2f}"
             )
             self.query_one("#target_display", Static).update(
                 f"Financial Target\n₹{self.state['target']:,.2f}"
             )
-            self.query_one("#paycut_ratio", Static).update(
-                f"Paycut Ratio\n{self.state['paycut_ratio']:,.2f}"
+            
+            self.query_one("#base_pay_display", Static).update(
+                f"Payroll Liability\n₹{self.state.get('base_pay', 0):,.2f}/mo"
             )
-            plot_widget = self.query_one("#division_plot", Pie)
 
-            # Update the widget's internal data dictionary
+            package_text = (
+                f"[bold cyan]Entity Name:[/bold cyan] {self.state.get('user', 'User')}\n"
+                f"[bold cyan]Designation:[/bold cyan] Chief Investment Officer & Sole Proprietor\n\n"
+                f"[bold yellow]Compensation Agreement:[/bold yellow]\n"
+                f"[bold]Base Salary[/bold]: [green]₹{self.state.get('base_pay', 0):,.2f} per month[/green]\n"
+                f"[bold]Daywise estimate[/bold] (20 days a month basis): [green]₹{(self.state.get('base_pay', 0) / 20):,.2f} per day[/green]\n"
+                f"[bold]Profit Sharing[/bold]: 100% of reinvested compounding equity\n"
+                f"[bold]Performance Target[/bold]: ₹{self.state.get('target', 0):,.2f} AUM\n\n"
+                f"[dim italic]**Base salary is processed automatically based on treasury surplus. "
+                f"Manual intervention is restricted to prevent emotional capital allocation**.[/dim italic]"
+            )
+            self.query_one("#package", Static).update(package_text)
+
+            plot_widget = self.query_one("#division_plot", Pie)
             plot_widget.data = {
                 "Trading Capital": self.state["trading_capital"],
-                "Savings": self.state["savings"],
+                "Savings (Treasury)": self.state["savings"],
             }
-
-            # Force the widget to recalculate the math and redraw
             plot_widget.refresh()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -446,7 +423,18 @@ class CFOTracker(App):
                 event.button.label = "Expand All" if item.collapsed else "Collapse All"
         self.save_state()
 
-
+    def action_quit(self):
+        """Called automatically when Ctrl+Q is pressed."""
+        # Tell the ZMQ thread to break its loop
+        self._is_shutting_down = True
+        
+        # Log the graceful exit 
+        logger.info("Initiating graceful shutdown via Ctrl+Q...")
+        
+        # Tell Textual to close the application
+        self.exit()
+        
 if __name__ == "__main__":
     app = CFOTracker()
     app.run()
+    

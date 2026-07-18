@@ -1,5 +1,3 @@
-/* --- Top Section: Dashboard --- */
-
 .balance-box {
     border: solid green;
     height: 5;
@@ -21,48 +19,54 @@
 
 #data_grid {
     grid-size: 2 2;
+    grid-columns: 1fr 1fr;
+    grid-rows: 1fr 1fr;
     width: 75%;
-    min-height: 15;
-    margin-bottom: 1;
+    height: 1fr;
 }
 
 #division_plot {
-    width: 1fr;
+    width: 100%;
     height: 100%;
     border: round cyan;
 }
 
 #history {
-    width: 1fr;
+    width: 100%;
     height: 100%;
     border: solid cyan;
-    background:$background;
+    background: $background;
 }
 
-#investments { 
+#investments {
+    width: 100%;
+    height: 100%;
     border: solid cyan;
-
 }
 
 #monitor {
     border: round cyan;
+    height: 100%;
+    width: 100%;
 }
 
-#activity_log {
-    padding: 1;
-    background:black;
+#package {
+    padding: 0;
+    border: round cyan;
+    height: 50%;
+    width: 100%;
 }
 
 #log_container {
     border: round cyan;
-
+    width: 100%;
+    height: 50%;
 }
 
-.data_panes {
-    width: 1fr;
-    height: 100%;
-    border: solid yellow;
+#activity_log {
     padding: 1;
+    background: black;
+    height: 100%;
 }
 
 #controls {
@@ -78,25 +82,22 @@
 
 Button {
     margin-left: 1;
-    height:3;
+    height: 3;
 }
-
 
 #trees_container {
-    height:95%;
-
+    height: 1fr;
 }
+
 .trees {
-    background:$background;
-}
-
-#tree_control_buttons {
+    background: $background;
 }
 
 .tree_buttons {
-    border:none;
-    height:1;
+    border: none;
+    height: 1;
 }
+
 #data_label, #plot_label {
     margin-top: 1;
 }
