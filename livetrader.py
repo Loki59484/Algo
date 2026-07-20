@@ -327,7 +327,7 @@ async def execute_live(
     if len(spot_df) < 2 or ce_df.empty or pe_df.empty:
         return
 
-    spot_row, spot_prev = spot_df.iloc[-1], spot_df.iloc[-2]
+    spot_row, _ = spot_df.iloc[-1], spot_df.iloc[-2]
     ce_row, pe_row = ce_df.iloc[-1], pe_df.iloc[-1]
     timestamp = (
         spot_df.index[-1]

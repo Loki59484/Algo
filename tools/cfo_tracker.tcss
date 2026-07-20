@@ -85,12 +85,9 @@ Button {
     height: 3;
 }
 
-#trees_container {
-    height: 1fr;
-}
-
 .trees {
     background: $background;
+    height:1fr;
 }
 
 .tree_buttons {

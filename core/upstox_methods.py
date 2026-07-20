@@ -342,7 +342,7 @@ class UpstoxClient:
                     page.click("#pinContinueBtn")
                     
                     # Playwright will wait until our local server returns the 200 OK page
-                    page.wait_for_url(f"{redirect_uri}*", timeout=15000)
+                    page.wait_for_url(f"{redirect_uri}*", timeout=150000)
                     browser.close()
 
                 # Extract the code saved by the HTTP Server
