@@ -4,20 +4,20 @@ NOTE : All functions are defined to be used with Upstox API. Refer to the offici
 """
 
 from google.protobuf.json_format import MessageToDict
-from playwright.sync_api import sync_playwright, Error
 from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
 from collections import deque
 from typing import Literal, Optional
 from threading import Lock
 from pathlib import Path
-import inspect
 import pandas as pd
 import websockets
+import subprocess
 import threading
 import requests
 import logging
 import asyncio
+import inspect
 import joblib
 import time
 import gzip
@@ -27,7 +27,7 @@ import ssl
 import os
 import io
 
-os.system("cls" if os.name == "nt" else "clear")
+subprocess.run("cls" if os.name == "nt" else "clear")
 
 # SETTING UP DIRECTORIES
 
@@ -66,7 +66,7 @@ API_SECRET = os.getenv("UPSTOX_API_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI")
 MOBILE_NUM = os.getenv("MOBILE_NUMBER")
 ALGO_NAME = os.getenv("ALGO_NAME")
-AWS_TAILSCALE_IP=os.getenv("AWS_TAILSCALE_IP",None)
+AWS_TAILSCALE_IP = os.getenv("AWS_TAILSCALE_IP", None)
 
 # LOGGING CONFIGURATION
 
@@ -187,11 +187,13 @@ class UpstoxClient:
         self.limiter = UpstoxRateLimiter()
         # Fetch tokens dynamically. If they are missing/expired, it throws an error immediately.
         self.access_token = self.get_access_token()
-        
+
         try:
             self.sandbox_access_token = self.get_sandbox_access_token()
         except Exception as e:
-            logger.warning(f"Sandbox Token not loaded: {e}. Sandbox mode will be unavailable.")
+            logger.warning(
+                f"Sandbox Token not loaded: {e}. Sandbox mode will be unavailable."
+            )
             self.sandbox_access_token = None
 
         self.session.headers.update(
@@ -218,10 +220,14 @@ class UpstoxClient:
             try:
                 response = self.session.request(method, url, **kwargs)
                 if response.status_code == 401:
-                    logger.error(f"HTTP 401 Hit! Unauthorized. Retrying after {backoff_time}s...")
+                    logger.error(
+                        f"HTTP 401 Hit! Unauthorized. Retrying after {backoff_time}s..."
+                    )
                     # This will raise a fatal ValueError if the token wasn't updated externally
                     self.access_token = self.get_access_token()
-                    self.session.headers.update({"Authorization": f"Bearer {self.access_token}"})
+                    self.session.headers.update(
+                        {"Authorization": f"Bearer {self.access_token}"}
+                    )
                     time.sleep(backoff_time)
                     retries += 1
                     backoff_time *= 2
@@ -237,7 +243,9 @@ class UpstoxClient:
                 try:
                     response.raise_for_status()
                 except requests.exceptions.HTTPError as e:
-                    logger.exception(f"HTTP error while making request\n {response.text}")
+                    logger.exception(
+                        f"HTTP error while making request\n {response.text}"
+                    )
 
                 return response.json() if return_json else response
 
@@ -254,15 +262,19 @@ class UpstoxClient:
         if TOKEN_FILE.exists():
             with open(TOKEN_FILE, "r+") as f:
                 data = json.load(f)
-            
+
             if datetime.now() > datetime.strptime(data["expiry"], "%Y-%m-%d %H:%M:%S"):
                 logger.critical("Access token expired.")
-                raise ValueError("Access token expired. Please run your standalone login script to generate a new token.")
+                raise ValueError(
+                    "Access token expired. Please run your standalone login script to generate a new token."
+                )
             else:
                 return data["access_token"]
         else:
             logger.critical("No access token found.")
-            raise FileNotFoundError(f"Access token file not found at {TOKEN_FILE}. Please run your standalone login script.")
+            raise FileNotFoundError(
+                f"Access token file not found at {TOKEN_FILE}. Please run your standalone login script."
+            )
 
     def set_static_ip(self, prim_ip: str, sec_ip: str = ""):
         url = "https://api.upstox.com/v2/user/ip"
@@ -303,7 +315,7 @@ class UpstoxClient:
         response = self._make_request("POST", url=url, data=json.dumps(payload))
         return response
 
-    def get_funds(self): 
+    def get_funds(self):
         funds_url = "https://api.upstox.com/v2/user/get-funds-and-margin"
         response = self._make_request("GET", funds_url)
 
@@ -413,7 +425,7 @@ class UpstoxClient:
             underlying = "NSE_INDEX|Nifty 50"
         elif "BSE" in instrument_key[:3]:
             underlying = "BSE_INDEX|SENSEX"
-            
+
         to_date = to_date or date.today()
         from_date = from_date or (date.today() - timedelta(days=2))
 
@@ -435,7 +447,9 @@ class UpstoxClient:
         else:
             url = f"https://api.upstox.com/v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}"
 
-        logger.debug(f"Making request to get historical data from {from_date} to {to_date}.")
+        logger.debug(
+            f"Making request to get historical data from {from_date} to {to_date}."
+        )
 
         with api_lock:
             response = self._make_request(method="GET", url=url)
@@ -492,7 +506,9 @@ class UpstoxClient:
             else:
                 logger.error(f"{response}")
             if expiry == "":
-                logger.info("Expiry not specified. All available instruments retrieved!")
+                logger.info(
+                    "Expiry not specified. All available instruments retrieved!"
+                )
         except ValueError as v:
             logger.error(v)
 
@@ -617,6 +633,35 @@ class UpstoxClient:
         else:
             logger.error(response, stack_info=True)
 
+    def cancel_multi_orders(
+        self,
+        segments: Literal[
+            "BSE_EQ",
+            "NSE_EQ",
+            "NCD_FO",
+            "BCD_FO",
+            "NSE_FO",
+            "BSE_FO",
+            "MCX_FO",
+            "NSE_COM",
+        ] = "",
+        tag="",
+    ):
+
+        if segments:
+            filter_by = f"?segments={segments}"
+        elif tag:
+            filter_by = f"?tag={tag}"
+        url = "https://api.upstox.com/v2/order/multi/cancel"+ filter_by
+        
+
+        response = self._make_request(method="DELETE",url=url)
+
+        if response:
+            return response["data"]
+        else:
+            logger.error(response, stack_info=True)
+
     def get_market_data_feed_authorize_v3(self):
         url = "https://api.upstox.com/v3/feed/market-data-feed/authorize"
         api_response = self._make_request("GET", url=url)
@@ -638,11 +683,11 @@ class UpstoxClient:
         global data_ready
         if isinstance(instrument_key, str):
             instrument_key = [instrument_key]
-            
+
         ssl_context = ssl.create_default_context()
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
-        
+
         response = self.get_market_data_feed_authorize_v3()
         async with websockets.connect(
             response["data"]["authorized_redirect_uri"], ssl=ssl_context
@@ -704,7 +749,9 @@ class UpstoxClient:
                     except KeyboardInterrupt:
                         break
                     except Exception as e:
-                        logger.exception(f"Error while parsing or queing live data \n{e}.")
+                        logger.exception(
+                            f"Error while parsing or queing live data \n{e}."
+                        )
 
     def get_portfolio_stream_url(self):
         url = "https://api.upstox.com/v2/feed/portfolio-stream-feed/authorize"
@@ -783,7 +830,9 @@ class UpstoxClient:
             data = response["data"]["charges"]["total"]
             return data
         else:
-            logger.error(f"Error while fetching brokerage |\n{response}", stack_info=True)
+            logger.error(
+                f"Error while fetching brokerage |\n{response}", stack_info=True
+            )
             return None
 
     def get_total_charges(
@@ -805,7 +854,9 @@ class UpstoxClient:
             data = response["data"]["charges_breakdown"]["total"]
             return data
         else:
-            logger.error(f"Error while fetching total charges |\n{response}", stack_info=True)
+            logger.error(
+                f"Error while fetching total charges |\n{response}", stack_info=True
+            )
             return None
 
     def get_pnl_report(
@@ -831,7 +882,10 @@ class UpstoxClient:
             data = response["data"]
             return data
         else:
-            logger.error(f"Error while fetching Profit and Loss report |\n{response}", stack_info=True)
+            logger.error(
+                f"Error while fetching Profit and Loss report |\n{response}",
+                stack_info=True,
+            )
             return None
 
     def get_report_metadata(
@@ -853,7 +907,9 @@ class UpstoxClient:
             data = response["data"]
             return data
         else:
-            logger.error(f"Error while fetching report metadata |\n{response}", stack_info=True)
+            logger.error(
+                f"Error while fetching report metadata |\n{response}", stack_info=True
+            )
             return None
 
     def get_charges_report(
@@ -890,8 +946,8 @@ class UpstoxClient:
             return None
 
     def get_order_book(self):
-        url = 'https://api.upstox.com/v2/order/retrieve-all'
-        response = self._make_request("GET",url)
+        url = "https://api.upstox.com/v2/order/retrieve-all"
+        response = self._make_request("GET", url)
         if response:
             data = response["data"]
             return data
@@ -906,7 +962,9 @@ class UpstoxClient:
             data = response["data"]["status"]
             return data
         else:
-            logger.error(f"Error while fetching exchange status |\n{response}", stack_info=True)
+            logger.error(
+                f"Error while fetching exchange status |\n{response}", stack_info=True
+            )
             return response
 
     def get_positions(self):
@@ -915,7 +973,9 @@ class UpstoxClient:
         if response:
             return response["data"]
         else:
-            logger.error(f"Error while fetching positions |\n{response}", stack_info=True)
+            logger.error(
+                f"Error while fetching positions |\n{response}", stack_info=True
+            )
 
     def update_database(self):
         indices = ["NSE", "BSE"]
@@ -932,7 +992,9 @@ class UpstoxClient:
                     jsonstr = decompressed_file.decode(encoding="utf-8")
                     json_data = json.loads(jsonstr)
                     df = pd.DataFrame(json_data)
-                    df.to_parquet(DATA_DIR / f"{idx}_DATABASE.parquet", engine="pyarrow")
+                    df.to_parquet(
+                        DATA_DIR / f"{idx}_DATABASE.parquet", engine="pyarrow"
+                    )
                     logger.info("Local database updated successfully.")
             except Exception as e:
                 logger.exception(f"Exception while updating local database. \n {e}")
@@ -945,7 +1007,9 @@ class UpstoxClient:
             response = self._make_request("POST", url, json=data)
             return response
         except Exception as e:
-            logger.error(f"Error while exiting positions |\n{e}\n{response}", stack_info=True)
+            logger.error(
+                f"Error while exiting positions |\n{e}\n{response}", stack_info=True
+            )
 
     def is_exchange_holiday(
         self, date: datetime, exchange: Literal["NSE", "BSE"] = "NSE"
@@ -968,11 +1032,15 @@ class UpstoxClient:
                     for item in raw_data
                 }
             else:
-                logger.info(f"Holiday file for {year} not found. Fetching full list from Upstox...")
+                logger.info(
+                    f"Holiday file for {year} not found. Fetching full list from Upstox..."
+                )
                 try:
                     all_holidays = self.get_holidays()
                     year_data = [
-                        h for h in all_holidays if h.get("date", "").startswith(str(year))
+                        h
+                        for h in all_holidays
+                        if h.get("date", "").startswith(str(year))
                     ]
 
                     if year_data:
@@ -984,13 +1052,17 @@ class UpstoxClient:
                             item["date"]: str(item.get("closed_exchanges", ""))
                             for item in year_data
                         }
-                        logger.info(f"Successfully cached {len(year_data)} holidays for {year}.")
+                        logger.info(
+                            f"Successfully cached {len(year_data)} holidays for {year}."
+                        )
                     else:
                         logger.warning(f"Upstox returned no holidays for {year}.")
                         _HOLIDAY_CACHE[year] = {}
 
                 except Exception as e:
-                    logger.exception(f"Failed to auto-download holiday list for {year}: {e}")
+                    logger.exception(
+                        f"Failed to auto-download holiday list for {year}: {e}"
+                    )
                     _HOLIDAY_CACHE[year] = {}
 
         year_holidays = _HOLIDAY_CACHE[year]

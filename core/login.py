@@ -162,7 +162,7 @@ class UpstoxAuthenticator:
             with open(TOKEN_FILE, "w") as f:
                 json.dump(token_data, f, indent=4)
 
-            console.print(f"[bold green]✅ Production Login Successful![/bold green]")
+            console.print("[bold green]✅ Production Login Successful![/bold green]")
             console.print(f"Token is valid until: [yellow]{token_data['expiry']}[/yellow]")
 
         except Exception as e:

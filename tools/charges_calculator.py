@@ -7,6 +7,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from core.upstox_methods import UpstoxClient# Replace with your actual import
 from core.methods import calculate_trade_charges
+
 def charges_calculator():
     ustox = UpstoxClient()
     order_book = ustox.get_order_book()

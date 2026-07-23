@@ -20,6 +20,7 @@ from textual.widgets import (
     Tree,
     DataTable,
 )
+
 from textual.widget import Widget
 from rich.text import Text
 
@@ -441,7 +442,7 @@ class CFOTracker(App):
             self.call_from_thread(apply_data)
             
         except Exception as e:
-            logger.error(f"Network error syncing charges: {e}")
+            logger.exception(f"Network error syncing charges: {e}")
             
             # 4. Handle errors cleanly on the UI
             def set_error():

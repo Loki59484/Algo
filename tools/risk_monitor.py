@@ -99,7 +99,7 @@ class RiskManager:
                 self._process_buy_order(update)
                 
             elif status == "complete" and txn_type == "SELL":
-                await self._evaluate_pnl_and_kill(update)
+                await self._evaluate_pnl_and_kill()
                 
             else:
                 logger.info(f"Update received for {update.get('trading_symbol', 'Unknown')} | status: {status}")
@@ -135,7 +135,7 @@ class RiskManager:
             product="I" if product_type == "SCP" else product_type,
         )
 
-    async def _evaluate_pnl_and_kill(self, update: Dict[str, Any]) -> None:
+    async def _evaluate_pnl_and_kill(self) -> None:
         """Evaluates daily realized PnL and triggers kill switches if thresholds are breached."""
         # Calculate current net realized PnL
         positions = self.ustox.get_positions()
@@ -151,14 +151,43 @@ class RiskManager:
             await self._trigger_kill_switch(current_pnl, "MAX LOSS REACHED - EMERGENCY")
 
     async def _trigger_kill_switch(self, pnl: float, reason: str) -> None:
-        """Disables trading for the day and sleeps the async loop."""
-        logger.warning(f"🚨 {reason} (₹{pnl:,.2f}). ACTIVATING KILL SWITCH! 🚨")
+        """Cancels orders, exits positions, disables trading, and sleeps."""
+        logger.warning(f"🚨 {reason} (₹{pnl:,.2f})")
         
-        resp = self.ustox.kill_switch(["NSE_FO", "BSE_FO"], action="DISABLE")
-        logger.info(f"Kill switch response: {resp}")
-        logger.info(f"Trading halted successfully. Sleeping for {self.SLEEP_AFTER_KILL / 3600} hours...")
-        
-        # Suspend processing for the remainder of the session
+        # 1. Cancel all open / pending orders
+        logger.info("Canceling all open orders...")
+        try:
+            self.ustox.cancel_multi_orders()
+        except Exception as e:
+            logger.error(f"Failed to cancel open orders: {e}")
+
+        # 2. Exit all open positions
+        logger.info("Exiting all open positions...")
+        try:
+            self.ustox.exitall()
+        except Exception as e:
+            logger.error(f"Failed to exit positions: {e}")
+
+        # 3. Wait for the broker's backend database to clear the ledger
+        logger.info("Waiting 4 seconds for Upstox ledger to settle...")
+        await asyncio.sleep(4)
+
+        # 4. Activate the Kill Switch
+        logger.warning("ACTIVATING SEGMENT KILL SWITCH!")
+        try:
+            resp = self.ustox.kill_switch(["NSE_FO", "BSE_FO", "NSE_EQ", "BSE_EQ"], action="DISABLE")
+            
+            # Verify success
+            if isinstance(resp, dict) and resp.get("status") == "success":
+                logger.info("Kill switch confirmed successful by broker.")
+            else:
+                logger.error(f"Kill switch may have failed! Broker response: {resp}")
+                
+        except Exception as e:
+            logger.error(f"Fatal error activating kill switch: {e}")
+
+        # 5. Sleep the daemon
+        logger.info(f"Risk Engine halted. Sleeping for {self.SLEEP_AFTER_KILL / 3600} hours...")
         await asyncio.sleep(self.SLEEP_AFTER_KILL)
 
 
