@@ -2,7 +2,9 @@ import sys
 import json
 import logging
 import time
+import math
 from pathlib import Path
+
 from textual import work
 from textual.screen import ModalScreen
 from textual.app import App, ComposeResult
@@ -16,9 +18,10 @@ from textual.widgets import (
     RichLog,
     Label,
     Tree,
-    Collapsible,
     DataTable,
 )
+from textual.widget import Widget
+from rich.text import Text
 
 # Adding root directory to sys.path for module imports
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -26,19 +29,17 @@ TOOL_DIR = ROOT_DIR / "tools"
 
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
-
-from core.upstox_methods import UpstoxClient, AWS_TAILSCALE_IP
 from core.datatypes import Funds
+from core.upstox_methods import UpstoxClient, AWS_TAILSCALE_IP
+from tools.charges_calculator import charges_calculator
 
-# Intitiating logger
 logger = logging.getLogger(__name__)
 STATE_FILE = TOOL_DIR / "finance_state.json"
 ustox = UpstoxClient()
 
-import math
-from textual.widget import Widget
-from rich.text import Text
-
+# -----------------------------------------------------------------------------
+# CUSTOM WIDGETS & MODALS
+# -----------------------------------------------------------------------------
 
 class Pie(Widget):
     """A custom pie chart widget that mathematically corrects terminal aspect ratios."""
@@ -55,7 +56,6 @@ class Pie(Widget):
         if total == 0:
             return Text("No funds available to display.", style="dim", justify="center")
 
-        # 1. Calculate angles for each slice
         slices = []
         current_angle = 0
         for key, value in self.data.items():
@@ -64,10 +64,8 @@ class Pie(Widget):
             slices.append((key, current_angle, current_angle + angle, value))
             current_angle += angle
 
-        # 2. Initialize Text object and CENTER IT
         result = Text()
         result.justify = "center"
-
         aspect_ratio = 2.0
         width = int(self.radius * aspect_ratio)
 
@@ -87,9 +85,7 @@ class Pie(Widget):
                             char_color = self.pie_colors[i % len(self.pie_colors)]
                             break
 
-                    result.append(
-                        self.marker, style=char_color
-                    )
+                    result.append(self.marker, style=char_color)
                 else:
                     result.append(" ")
             result.append("\n")
@@ -104,59 +100,24 @@ class Pie(Widget):
 
 class SetupScreen(ModalScreen[dict]):
     """A popup screen to ask for initial balances if no save file exists."""
-
     CSS_PATH = "SetupScreen.tcss"
 
     def compose(self) -> ComposeResult:
         with Vertical(id="setup_dialog"):
             with Center():
-                yield Label(
-                    "[bold yellow]Corporate Setup initialization[/bold yellow]\nPlease establish your company parameters:\n",
-                )
+                yield Label("[bold yellow]Corporate Setup initialization[/bold yellow]\nPlease establish your company parameters:\n")
                 with Grid(id="data_grid"):
-                    yield Input(
-                        placeholder="Name", id="init_user", classes="setup-input"
-                    )
-                    yield Input(
-                        placeholder="Current Debt (e.g., 1900000)",
-                        id="init_debt",
-                        classes="setup-input",
-                    )
-                    yield Input(
-                        placeholder="AUM (e.g., 1000000)",
-                        id="init_capital",
-                        classes="setup-input",
-                    )
-                    yield Input(
-                        placeholder="Financial Target (e.g., 2000000)",
-                        id="init_target",
-                        classes="setup-input",
-                    )
-                    yield Input(
-                        placeholder="Savings (e.g., 400000)",
-                        id="init_savings",
-                        classes="setup-input",
-                    )
-                    yield Input(
-                        placeholder="Expected Base Pay (e.g., 50000/month)",
-                        id="init_base_pay",
-                        classes="setup-input",
-                    )
+                    yield Input(placeholder="Name", id="init_user", classes="setup-input")
+                    yield Input(placeholder="Current Debt (e.g., 1900000)", id="init_debt", classes="setup-input")
+                    yield Input(placeholder="AUM (e.g., 1000000)", id="init_capital", classes="setup-input")
+                    yield Input(placeholder="Financial Target (e.g., 2000000)", id="init_target", classes="setup-input")
+                    yield Input(placeholder="Savings (e.g., 400000)", id="init_savings", classes="setup-input")
+                    yield Input(placeholder="Expected Base Pay (e.g., 50000/month)", id="init_base_pay", classes="setup-input")
 
             with Center():
                 with Horizontal(id="control_container"):
-                    yield Button(
-                        "Establish Corporation",
-                        id="btn_save_setup",
-                        variant="success",
-                        classes="control_buttons",
-                    )
-                    yield Button(
-                        "Fetch from Upstox",
-                        id="btn_fetch_upstox",
-                        variant="success",
-                        classes="control_buttons",
-                    )
+                    yield Button("Establish Corporation", id="btn_save_setup", variant="success", classes="control_buttons")
+                    yield Button("Fetch from Upstox", id="btn_fetch_upstox", variant="success", classes="control_buttons")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()
@@ -179,32 +140,31 @@ class SetupScreen(ModalScreen[dict]):
                 }
                 self.dismiss(new_state)
             except ValueError:
-                self.query_one(Label).update(
-                    "[bold red]Error: Please enter valid numbers![/bold red]"
-                )
+                self.query_one(Label).update("[bold red]Error: Please enter valid numbers![/bold red]")
 
         if event.button.id == "btn_fetch_upstox":
             try:
                 capital_input = self.query_one("#init_capital", Input)
                 capital_input.value = "30000"
             except Exception:
-                self.query_one(Label).update(
-                    "[bold red]Error in fetching upstox data. Please enter manually.[/bold red]"
-                )
+                self.query_one(Label).update("[bold red]Error in fetching upstox data. Please enter manually.[/bold red]")
 
+
+# -----------------------------------------------------------------------------
+# MAIN DASHBOARD
+# -----------------------------------------------------------------------------
 
 class CFOTracker(App):
     TITLE = "Algo's Personal CFO"
     CSS_PATH = "cfo_tracker.tcss"
-
     BINDINGS = [("ctrl+q", "quit", "Quit the Application")]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._is_shutting_down = False
+        self.incoming_data = {"Live Trader": 0, "Risk Monitor": 0, "AWS Server": 0}
 
     def compose(self) -> ComposeResult:
-
         yield Header()
 
         with Container(id="dashboard"):
@@ -216,83 +176,105 @@ class CFOTracker(App):
                 yield Static(id="target_display", classes="balance-box")
                 yield Static(id="base_pay_display", classes="balance-box")
 
-        # Grid to show other related data
         with Horizontal():
             with Grid(id="data_grid"):
-                # Plot of available funds in different divisions
-                yield Pie(
-                    data={"Trading Capital": 0, "Savings": 0},
-                    radius=7,
-                    id="division_plot",
-                    classes="plotext_plot",
-                )
+                yield Pie(data={"Trading Capital": 0, "Savings": 0}, radius=7, id="division_plot", classes="plotext_plot")
 
-                # History of recent events like transactions, debt settlements, payments etc.
+                # REFACTOR 1: A single Consolidated Tree for Financial Ledger (Zero UI lag)
                 with Static(id="history", classes="data_panes"):
                     with Vertical():
-                        payments = Tree(
-                            id="payments", label="Expenses", classes="trees"
-                        )
-                        payout = Tree(id="payout", label="Payouts", classes="trees")
-                        payin = Tree(id="payin", label="Payins", classes="trees")
-                        wants = Tree(id="wants", label="Wants", classes="trees")
-
-                        yield payments
-                        yield payout
-                        yield payin
-                        yield wants
-
+                        yield Tree("Financial Ledger", id="recents_tree")
                         with Horizontal(id="tree_control_buttons"):
-                            yield Button(
-                                label="Expand All",
-                                id="btn_toggle_trees",
-                                classes="tree_buttons",
-                            )
+                            yield Button("Expand All", id="btn_toggle_trees", classes="tree_buttons")
 
+                # REFACTOR 2: Professional Investment DataTable
                 with Static(id="investments", classes="data_panes"):
-                    with Vertical():
-                        mutual_funds = Collapsible(
-                            id="payments", classes="trees", title="Mutual_Funds"
-                        )
-                        options = Collapsible(
-                            id="payout", classes="trees", title="Options"
-                        )
-                        stocks = Collapsible(
-                            id="payin", classes="trees", title="Stocks"
-                        )
-                        fixed_deposits = Collapsible(
-                            id="wants", classes="trees", title="Fixed Deposits"
-                        )
+                    yield DataTable(id="investments_table")
 
-                        yield mutual_funds
-                        yield options
-                        yield stocks
-                        yield fixed_deposits
-
-                        with Horizontal(id="tree_control_buttons"):
-                            yield Button(
-                                label="Expand All",
-                                id="btn_toggle_collapsibles",
-                                classes="tree_buttons",
-                            )
                 with Static(id="monitor", classes="data_panes"):
                     yield DataTable(id="system_status_table")
 
             with Vertical():
                 with Container(id="log_container"):
-                    yield RichLog(
-                        id="activity_log",
-                        highlight=True,
-                        markup=True,
-                        max_lines=100,
-                        auto_scroll=True,
-                    )
+                    yield RichLog(id="activity_log", highlight=True, markup=True, max_lines=100, auto_scroll=True)
                 yield Static(id="package")
 
         yield Footer()
 
+    def on_mount(self):
+        log = self.query_one(RichLog)
+
+        if not STATE_FILE.exists() or STATE_FILE.stat().st_size <= 0:
+            self.push_screen(SetupScreen(), self.init_state_callback)
+        else:
+            self.state = self.load_state()
+            self.update_ui()
+            log.write(f"[bold cyan]Hello {self.state.get('user', 'User')}, This is your personal CFO![/bold cyan]")
+
+        # Apply borders
+        self.query_one("#dashboard", Container).border_title = "Financial Summary"
+        self.query_one("#division_plot", Pie).border_title = "Division of Funds"
+        self.query_one("#history", Static).border_title = "Recents Ledger"
+        self.query_one("#investments", Static).border_title = "Current Investments"
+        self.query_one("#monitor", Static).border_title = "System Monitor"
+        self.query_one("#log_container", Container).border_title = "Logs"
+        self.query_one("#package", Static).border_title = "Financial Package"
+
+        # Initialize the Recents Tree
+        recents_tree = self.query_one("#recents_tree", Tree)
+        recents_tree.root.expand()
+        self.t_expenses = recents_tree.root.add("Expenses", expand=False)
+        self.t_payouts = recents_tree.root.add("Payouts", expand=False)
+        self.t_payins = recents_tree.root.add("Payins", expand=False)
+        self.t_wants = recents_tree.root.add("Wants", expand=False)
+
+        inv_table = self.query_one("#investments_table", DataTable)
+        inv_table.cursor_type = "row"
+        
+        # FIX 1: Explicitly set the keys for the Investment columns
+        inv_table.add_column("Asset Class", key="Asset Class")
+        inv_table.add_column("Invested (₹)", key="Invested (₹)")
+        inv_table.add_column("Current (₹)", key="Current (₹)")
+        inv_table.add_column("Status/P&L", key="Status/P&L")
+        inv_table.add_column("Duration/Summary", key="Duration/Summary")
+        
+        # We assign keys to these rows so we can update them seamlessly later
+        inv_table.add_row("Mutual Funds", "0.0", "0.0", "-", "Long Term", key="mf")
+        inv_table.add_row("Stocks", "0.0", "0.0", "-", "Swing/Hold", key="stk")
+        inv_table.add_row("Options", "0.0", "0.0", "-", "Awaiting Sync", key="opt")
+        inv_table.add_row("Fixed Deposits", "0.0", "0.0", "-", "Locked", key="fd")
+
+        # Initialize System Monitor DataTable
+        monitor_table = self.query_one("#system_status_table", DataTable)
+        monitor_table.cursor_type = "none" 
+        
+        # FIX 2: Explicitly set the keys for the Monitor columns
+        monitor_table.add_column("Component", key="Component")
+        monitor_table.add_column("Status", key="Status")
+        monitor_table.add_column("Last Seen", key="Last Seen")     
+        
+        monitor_table.add_row("Live Trader", "🔴 Offline", "Never", key="live_trader")
+        monitor_table.add_row("Risk Monitor", "🔴 Offline", "Never", key="risk_monitor")
+        monitor_table.add_row("AWS Server", "🔴 Offline", "Never", key="aws_server")
+        # Map your dictionary to those exact string keys
+        self.system_components = {
+            "Live Trader": {"row_key": "live_trader"},
+            "Risk Monitor": {"row_key": "risk_monitor"},
+            "AWS Server": {"row_key": "aws_server"}
+        }
+
+        self.incoming_data = {"Live Trader": 0, "Risk Monitor": 0, "AWS Server": 0}
+
+        self.zmq_listener()
+        self.set_interval(1.0, self.check_heartbeats)
+        
+        # ADD THIS: Run the API fetch in the background once on startup
+        self.sync_investment_data()
+        
+        # ADD THIS (Optional): Automatically refresh the charges from the API every 1 hour (3600 seconds)
+        self.set_interval(3600.0, self.sync_investment_data)    
+    
     def _log_remote_error(self, component: str, msg: str):
-        """Safely writes remote AWS errors to the RichLog in red."""
         log_widget = self.query_one(RichLog)
         log_widget.write(f"[bold red][{component} ALERT][/bold red] {msg}")
 
@@ -304,11 +286,8 @@ class CFOTracker(App):
         context = zmq.Context.instance()
         sub_socket = context.socket(zmq.SUB)
 
-        # Connect to Heartbeat Ports
         sub_socket.connect(f"tcp://{AWS_TAILSCALE_IP}:5557")
         sub_socket.connect(f"tcp://{AWS_TAILSCALE_IP}:5558")
-
-        # Connect to the NEW Error Log Ports
         sub_socket.connect(f"tcp://{AWS_TAILSCALE_IP}:5567")
         sub_socket.connect(f"tcp://{AWS_TAILSCALE_IP}:5568")
 
@@ -317,7 +296,6 @@ class CFOTracker(App):
         while not self._is_shutting_down:
             try:
                 message = sub_socket.recv_string(flags=zmq.NOBLOCK)
-                logger.info(f"Recieved msg : {message}")
                 
                 if message.startswith("PING:"):
                     component_name = message.split(":")[1]
@@ -338,61 +316,15 @@ class CFOTracker(App):
         sub_socket.close()
         context.term()
 
-    def on_mount(self):
-        log = self.query_one(RichLog)
-
-        # Check if file exists immediately on startup
-        if not STATE_FILE.exists() or STATE_FILE.stat().st_size <= 0:
-            self.push_screen(SetupScreen(), self.init_state_callback)
-        else:
-            self.state = self.load_state()
-            self.update_ui()
-            log.write(
-                f"[bold cyan]Hello {self.state.get('user', 'User')}, This is your personal CFO![/bold cyan]"
-            )
-
-        self.query_one("#dashboard", Container).border_title = "Financial Summary"
-        self.query_one("#division_plot", Pie).border_title = "Division of Funds"
-        self.query_one("#history", Static).border_title = "Recents"
-        self.query_one("#investments", Static).border_title = "Current Investments"
-        self.query_one("#monitor", Static).border_title = "System Monitor"
-        self.query_one("#log_container", Container).border_title = "Logs"
-        self.query_one("#package", Static).border_title = "Financial Package"
-
-        # Reverted DataTable setup to read-only
-        monitor_table = self.query_one("#system_status_table", DataTable)
-        monitor_table.cursor_type = "none" 
-        
-        monitor_table.add_column("Component", key="Component")
-        monitor_table.add_column("Status", key="Status")
-        monitor_table.add_column("Last Seen", key="Last Seen")        
-        
-        self.system_components = {
-            "Live Trader": {"row_key": monitor_table.add_row("Live Trader", "🔴 Offline", "Never")},
-            "Risk Monitor": {"row_key": monitor_table.add_row("Risk Monitor", "🔴 Offline", "Never")},
-            "AWS Server": {"row_key": monitor_table.add_row("AWS Server", "🔴 Offline", "Never")}
-        }
-
-        self.incoming_data = {"Live Trader": 0, "Risk Monitor": 0, "AWS Server": 0}
-
-        self.zmq_listener()
-        self.set_interval(1.0, self.check_heartbeats)
-
     def init_state_callback(self, new_state: dict):
         self.state = new_state
         self.save_state()
         self.update_ui()
-
         log = self.query_one(RichLog)
-        log.write(
-            "[bold green]Corporate setup complete. Data initialized![/bold green]"
-        )
-        log.write(
-            f"[bold cyan]Hello {self.state.get('user', 'User')}, This is your personal CFO![/bold cyan]"
-        )
+        log.write("[bold green]Corporate setup complete. Data initialized![/bold green]")
+        log.write(f"[bold cyan]Hello {self.state.get('user', 'User')}, This is your personal CFO![/bold cyan]")
 
     def check_heartbeats(self):
-        """Timer task that updates the DataTable with live statuses."""
         monitor_table = self.query_one("#system_status_table", DataTable)
         current_time = time.time()
         
@@ -421,68 +353,112 @@ class CFOTracker(App):
         self.update_ui()
 
     def update_ui(self):
-        if hasattr(self, "state"):
+        if not hasattr(self, "state"):
+            return
 
-            self.query_one("#debt_display", Static).update(
-                f"Corporate Debt\n₹{self.state['debt']:,.2f}"
-            )
-            self.query_one("#capital_display", Static).update(
-                f"AUM (Trading Capital)\n₹{self.state['trading_capital']:,.2f}"
-            )
-            self.query_one("#savings_display", Static).update(
-                f"Treasury (Buffer)\n₹{self.state['savings']:,.2f}"
-            )
-            self.query_one("#profit_display", Static).update(
-                f"Unrealized Alpha\n₹{self.state['unrealized_profit']:,.2f}"
-            )
-            self.query_one("#target_display", Static).update(
-                f"Financial Target\n₹{self.state['target']:,.2f}"
-            )
+        self.query_one("#debt_display", Static).update(f"Corporate Debt\n₹{self.state['debt']:,.2f}")
+        self.query_one("#capital_display", Static).update(f"AUM (Trading Capital)\n₹{self.state['trading_capital']:,.2f}")
+        self.query_one("#savings_display", Static).update(f"Treasury (Buffer)\n₹{self.state['savings']:,.2f}")
+        self.query_one("#profit_display", Static).update(f"Unrealized Alpha\n₹{self.state['unrealized_profit']:,.2f}")
+        self.query_one("#target_display", Static).update(f"Financial Target\n₹{self.state['target']:,.2f}")
+        self.query_one("#base_pay_display", Static).update(f"Payroll Liability\n₹{self.state.get('base_pay', 0):,.2f}/mo")
 
-            self.query_one("#base_pay_display", Static).update(
-                f"Payroll Liability\n₹{self.state.get('base_pay', 0):,.2f}/mo"
-            )
+        package_text = (
+            f"[bold cyan]Entity Name:[/bold cyan] {self.state.get('user', 'User')}\n"
+            f"[bold cyan]Designation:[/bold cyan] Chief Investment Officer & Sole Proprietor\n\n"
+            f"[bold yellow]Compensation Agreement:[/bold yellow]\n"
+            f"[bold]Base Salary[/bold]: [green]₹{self.state.get('base_pay', 0):,.2f} per month[/green]\n"
+            f"[bold]Daywise estimate[/bold] (20 days a month basis): [green]₹{(self.state.get('base_pay', 0) / 20):,.2f} per day[/green]\n"
+            f"[bold]Profit Sharing[/bold]: 100% of reinvested compounding equity\n"
+            f"[bold]Performance Target[/bold]: ₹{self.state.get('target', 0):,.2f} AUM\n\n"
+            f"[dim italic]**Base salary is processed automatically based on treasury surplus. "
+            f"Manual intervention is restricted to prevent emotional capital allocation**.[/dim italic]"
+        )
+        self.query_one("#package", Static).update(package_text)
 
-            package_text = (
-                f"[bold cyan]Entity Name:[/bold cyan] {self.state.get('user', 'User')}\n"
-                f"[bold cyan]Designation:[/bold cyan] Chief Investment Officer & Sole Proprietor\n\n"
-                f"[bold yellow]Compensation Agreement:[/bold yellow]\n"
-                f"[bold]Base Salary[/bold]: [green]₹{self.state.get('base_pay', 0):,.2f} per month[/green]\n"
-                f"[bold]Daywise estimate[/bold] (20 days a month basis): [green]₹{(self.state.get('base_pay', 0) / 20):,.2f} per day[/green]\n"
-                f"[bold]Profit Sharing[/bold]: 100% of reinvested compounding equity\n"
-                f"[bold]Performance Target[/bold]: ₹{self.state.get('target', 0):,.2f} AUM\n\n"
-                f"[dim italic]**Base salary is processed automatically based on treasury surplus. "
-                f"Manual intervention is restricted to prevent emotional capital allocation**.[/dim italic]"
-            )
-            self.query_one("#package", Static).update(package_text)
+# ... [Keep the package_text update] ...
 
-            plot_widget = self.query_one("#division_plot", Pie)
-            plot_widget.data = {
-                "Trading Capital": self.state["trading_capital"],
-                "Savings (Treasury)": self.state["savings"],
-            }
-            plot_widget.refresh()
-
+        plot_widget = self.query_one("#division_plot", Pie)
+        plot_widget.data = {
+            "Trading Capital": self.state["trading_capital"],
+            "Savings (Treasury)": self.state["savings"],
+        }
+        plot_widget.refresh()
+        
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_save_setup":
             return
 
         if event.button.id == "btn_toggle_trees":
-            for tree in self.query(Tree):
-                tree.root.toggle_all()
-                event.button.label = (
-                    "Collapse All" if tree.root.is_expanded else "Expand All"
-                )
-        elif event.button.id == "btn_toggle_collapsibles":
-            for item in self.query(Collapsible):
-                item.collapsed = not item.collapsed
-                event.button.label = "Expand All" if item.collapsed else "Collapse All"
+            tree = self.query_one("#recents_tree", Tree)
+            if tree.root.is_expanded:
+                tree.root.collapse_all()
+                event.button.label = "Expand All"
+            else:
+                tree.root.expand_all()
+                event.button.label = "Collapse All"
+                
         self.save_state()
+
+    @work(exclusive=True, thread=True)
+    def sync_investment_data(self):
+        """Fetches heavy API data like charges in the background without freezing the UI."""
+        
+        # 1. Tell the UI we are fetching (Safely pushed to Main Thread)
+        def set_fetching():
+            fetching = "[bold yellow]Fetching...[/bold yellow]"
+            try:
+                inv_table = self.query_one("#investments_table", DataTable)
+                inv_table.update_cell("opt", "Duration/Summary", fetching)
+                inv_table.update_cell("opt", "Status/P&L", fetching)
+                inv_table.update_cell("opt", "Current (₹)", fetching)
+            except Exception:
+                pass
+                
+        self.call_from_thread(set_fetching)
+        
+        # 2. Do the heavy network lifting in the background thread
+        try:
+            charges = charges_calculator()
+            capital: Funds = Funds.update_from_json(ustox.get_funds())
+            # 3. Tell the UI to apply the fetched data (Safely pushed to Main Thread)
+            def _calculate_current_pnl() -> float:
+                """Fetches live positions to calculate today's realized PnL."""
+                positions = ustox.get_positions()
+                return sum(item.get("realised", 0.0) for item in positions)
+            
+            capital.pnl = _calculate_current_pnl()
+            
+            def apply_data():
+                try:
+                    inv_table = self.query_one("#investments_table", DataTable)
+                    inv_table.update_cell("opt", "Duration/Summary", f"Charges: ₹{charges}")
+                    inv_table.update_cell("opt", "Status/P&L", f"₹{capital.pnl:,.2f}")
+                    inv_table.update_cell("opt", "Current (₹)", f"₹{capital.available_margin:,.2f}")
+                except Exception:
+                    pass
+                    
+            self.call_from_thread(apply_data)
+            
+        except Exception as e:
+            logger.error(f"Network error syncing charges: {e}")
+            
+            # 4. Handle errors cleanly on the UI
+            def set_error():
+                try:
+                    inv_table = self.query_one("#investments_table", DataTable)
+                    inv_table.update_cell("opt", "Duration/Summary", "Sync Failed (Network)")
+                    inv_table.update_cell("opt", "Status/P&L", "Error")
+                    inv_table.update_cell("opt", "Current (₹)", "Error")
+                except Exception:
+                    pass
+                    
+            self.call_from_thread(set_error)
 
     def action_quit(self):
         """Called automatically when Ctrl+Q is pressed."""
         self._is_shutting_down = True
-        logger.info("Initiating graceful shutdown via Ctrl+Q...")
+        logger.info("Initiating hard shutdown via Ctrl+Q...")
         self.exit()
 
 if __name__ == "__main__":

@@ -1,0 +1,90 @@
+2026-07-23 16:06:23,620 | core.upstox_methods | | INFO | [upstox_methods.authorization:309] | Authorization initiated
+2026-07-23 16:06:23,620 | core.upstox_methods | | INFO | [upstox_methods.run_simple_server:305] | Local HTTP server listening on http://localhost:5000/callback...
+2026-07-23 16:06:30,776 | core.upstox_methods | | ERROR | [upstox_methods._run_playwright:385] | Error while getting access token: EOF when reading a line
+Traceback (most recent call last):
+  File "/home/ubuntu/Algo/core/upstox_methods.py", line 339, in _run_playwright
+    page.fill("#otpNum", input("Enter OTP : "))
+                         ^^^^^^^^^^^^^^^^^^^^^
+EOFError: EOF when reading a line
+2026-07-23 16:06:30,783 | core.methods | | INFO | [methods.emit:137] | Error msg sent : Error while getting access token: EOF when reading a line
+Traceback (most recent call last):
+  File "/home/ubuntu/Algo/core/upstox_methods.py", line 339, in _run_playwright
+    page.fill("#otpNum", input("Enter OTP : "))
+                         ^^^^^^^^^^^^^^^^^^^^^
+EOFError: EOF when reading a line
+2026-07-23 16:06:32,812 | core.upstox_methods | | INFO | [upstox_methods.update_database:1198] | Local database updated successfully.
+2026-07-23 16:06:33,206 | core.upstox_methods | | INFO | [upstox_methods.update_database:1198] | Local database updated successfully.
+2026-07-23 16:06:33,228 | core.upstox_methods | | INFO | [upstox_methods.authorization:309] | Authorization initiated
+2026-07-23 16:06:33,228 | core.upstox_methods | | INFO | [upstox_methods.run_simple_server:305] | Local HTTP server listening on http://localhost:5000/callback...
+2026-07-23 16:06:41,288 | core.upstox_methods | | ERROR | [upstox_methods._run_playwright:385] | Error while getting access token: EOF when reading a line
+Traceback (most recent call last):
+  File "/home/ubuntu/Algo/core/upstox_methods.py", line 339, in _run_playwright
+    page.fill("#otpNum", input("Enter OTP : "))
+                         ^^^^^^^^^^^^^^^^^^^^^
+EOFError: EOF when reading a line
+2026-07-23 16:06:41,294 | core.methods | | INFO | [methods.emit:137] | Error msg sent : Error while getting access token: EOF when reading a line
+Traceback (most recent call last):
+  File "/home/ubuntu/Algo/core/upstox_methods.py", line 339, in _run_playwright
+    page.fill("#otpNum", input("Enter OTP : "))
+                         ^^^^^^^^^^^^^^^^^^^^^
+EOFError: EOF when reading a line
+2026-07-23 16:06:43,386 | core.upstox_methods | | INFO | [upstox_methods.update_database:1198] | Local database updated successfully.
+2026-07-23 16:06:43,756 | core.upstox_methods | | INFO | [upstox_methods.update_database:1198] | Local database updated successfully.
+2026-07-23 16:06:43,831 | core.upstox_methods | | ERROR | [upstox_methods._make_request:224] | HTTP 401 Hit! Retrying after 2.0s...
+2026-07-23 16:06:43,831 | core.methods | | INFO | [methods.emit:137] | Error msg sent : HTTP 401 Hit! Retrying after 2.0s...
+2026-07-23 16:06:43,832 | core.upstox_methods | | INFO | [upstox_methods.authorization:309] | Authorization initiated
+2026-07-23 16:06:43,833 | core.upstox_methods | | INFO | [upstox_methods.run_simple_server:305] | Local HTTP server listening on http://localhost:5000/callback...
+2026-07-23 16:06:52,863 | core.upstox_methods | | ERROR | [upstox_methods._run_playwright:385] | Error while getting access token: EOF when reading a line
+Traceback (most recent call last):
+  File "/home/ubuntu/Algo/core/upstox_methods.py", line 339, in _run_playwright
+    page.fill("#otpNum", input("Enter OTP : "))
+                         ^^^^^^^^^^^^^^^^^^^^^
+EOFError: EOF when reading a line
+2026-07-23 16:06:52,870 | core.methods | | INFO | [methods.emit:137] | Error msg sent : Error while getting access token: EOF when reading a line
+Traceback (most recent call last):
+  File "/home/ubuntu/Algo/core/upstox_methods.py", line 339, in _run_playwright
+    page.fill("#otpNum", input("Enter OTP : "))
+                         ^^^^^^^^^^^^^^^^^^^^^
+EOFError: EOF when reading a line
+2026-07-23 16:06:54,886 | core.upstox_methods | | INFO | [upstox_methods.update_database:1198] | Local database updated successfully.
+2026-07-23 16:06:55,254 | core.upstox_methods | | INFO | [upstox_methods.update_database:1198] | Local database updated successfully.
+2026-07-23 16:06:57,302 | core.upstox_methods | | ERROR | [upstox_methods._make_request:224] | HTTP 401 Hit! Retrying after 4.0s...
+2026-07-23 16:06:57,302 | core.methods | | INFO | [methods.emit:137] | Error msg sent : HTTP 401 Hit! Retrying after 4.0s...
+2026-07-23 16:06:57,306 | core.upstox_methods | | INFO | [upstox_methods.authorization:309] | Authorization initiated
+2026-07-23 16:06:57,307 | core.upstox_methods | | INFO | [upstox_methods.run_simple_server:305] | Local HTTP server listening on http://localhost:5000/callback...
+2026-07-23 16:07:07,119 | core.upstox_methods | | ERROR | [upstox_methods._run_playwright:385] | Error while getting access token: EOF when reading a line
+Traceback (most recent call last):
+  File "/home/ubuntu/Algo/core/upstox_methods.py", line 339, in _run_playwright
+    page.fill("#otpNum", input("Enter OTP : "))
+                         ^^^^^^^^^^^^^^^^^^^^^
+EOFError: EOF when reading a line
+2026-07-23 16:07:07,126 | core.methods | | INFO | [methods.emit:137] | Error msg sent : Error while getting access token: EOF when reading a line
+Traceback (most recent call last):
+  File "/home/ubuntu/Algo/core/upstox_methods.py", line 339, in _run_playwright
+    page.fill("#otpNum", input("Enter OTP : "))
+                         ^^^^^^^^^^^^^^^^^^^^^
+EOFError: EOF when reading a line
+2026-07-23 16:07:08,870 | core.upstox_methods | | INFO | [upstox_methods.update_database:1198] | Local database updated successfully.
+2026-07-23 16:07:09,280 | core.upstox_methods | | INFO | [upstox_methods.update_database:1198] | Local database updated successfully.
+2026-07-23 16:07:13,337 | core.upstox_methods | | ERROR | [upstox_methods._make_request:224] | HTTP 401 Hit! Retrying after 8.0s...
+2026-07-23 16:07:13,337 | core.methods | | INFO | [methods.emit:137] | Error msg sent : HTTP 401 Hit! Retrying after 8.0s...
+2026-07-23 16:07:13,341 | core.upstox_methods | | INFO | [upstox_methods.authorization:309] | Authorization initiated
+2026-07-23 16:07:13,341 | core.upstox_methods | | INFO | [upstox_methods.run_simple_server:305] | Local HTTP server listening on http://localhost:5000/callback...
+2026-07-23 16:07:22,601 | core.upstox_methods | | ERROR | [upstox_methods._run_playwright:385] | Error while getting access token: EOF when reading a line
+Traceback (most recent call last):
+  File "/home/ubuntu/Algo/core/upstox_methods.py", line 339, in _run_playwright
+    page.fill("#otpNum", input("Enter OTP : "))
+                         ^^^^^^^^^^^^^^^^^^^^^
+EOFError: EOF when reading a line
+2026-07-23 16:07:22,610 | core.methods | | INFO | [methods.emit:137] | Error msg sent : Error while getting access token: EOF when reading a line
+Traceback (most recent call last):
+  File "/home/ubuntu/Algo/core/upstox_methods.py", line 339, in _run_playwright
+    page.fill("#otpNum", input("Enter OTP : "))
+                         ^^^^^^^^^^^^^^^^^^^^^
+EOFError: EOF when reading a line
+2026-07-23 16:07:24,397 | core.upstox_methods | | INFO | [upstox_methods.update_database:1198] | Local database updated successfully.
+2026-07-23 16:07:24,763 | core.upstox_methods | | INFO | [upstox_methods.update_database:1198] | Local database updated successfully.
+2026-07-23 16:07:32,816 | core.upstox_methods | | ERROR | [upstox_methods._make_request:224] | HTTP 401 Hit! Retrying after 16.0s...
+2026-07-23 16:07:32,817 | core.methods | | INFO | [methods.emit:137] | Error msg sent : HTTP 401 Hit! Retrying after 16.0s...
+2026-07-23 16:07:32,819 | core.upstox_methods | | INFO | [upstox_methods.authorization:309] | Authorization initiated
+2026-07-23 16:07:32,820 | core.upstox_methods | | INFO | [upstox_methods.run_simple_server:305] | Local HTTP server listening on http://localhost:5000/callback...

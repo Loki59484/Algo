@@ -7,7 +7,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from core.upstox_methods import UpstoxClient# Replace with your actual import
 from core.methods import calculate_trade_charges
-def main():
+def charges_calculator():
     ustox = UpstoxClient()
     order_book = ustox.get_order_book()
     completed = [item for item in order_book if item['status']=='complete']
@@ -22,5 +22,5 @@ def main():
 
 
 if __name__ == "__main__":
-    total_charges = main()
+    total_charges = charges_calculator()
     print(f"Total charges for all completed orders: {total_charges}")
