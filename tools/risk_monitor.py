@@ -25,7 +25,7 @@ class RiskManager:
 
     # Configurable Constants
     COST_BUFFER = 5000.0
-    TRADE_PROFIT_TARGET = 500.0
+    TRADE_PROFIT_TARGET = 1700.0
     DEFAULT_MAX_LOSS = -5000.0
     TICK_SIZE = 0.05
     SLEEP_AFTER_KILL = 12 * 60 * 60  # 12 hours in seconds
