@@ -143,7 +143,7 @@ class RiskManager:
         charges = charges_calculator()
         self.target_threshold = self.day_target+charges
         self.max_loss_threshold = self.DEFAULT_MAX_LOSS - charges
-        logger.info(f"Current Realized PnL: ₹{current_pnl:,.2f}")
+        logger.info(f"Current Realized PnL: ₹{current_pnl:,.2f} | Current Target : ₹{self.target_threshold:,.2f} | Max Loss Threshold ₹{self.max_loss_threshold:,.2f}")
 
         # Check thresholds
         if current_pnl >= self.target_threshold:
