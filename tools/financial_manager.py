@@ -203,6 +203,8 @@ class CFOTracker(App):
         yield Footer()
 
     def on_mount(self):
+        status_online = "🟢 Online"
+        status_offline = "🔴 Offline"
         log = self.query_one(RichLog)
 
         if not STATE_FILE.exists() or STATE_FILE.stat().st_size <= 0:
@@ -254,9 +256,9 @@ class CFOTracker(App):
         monitor_table.add_column("Status", key="Status")
         monitor_table.add_column("Last Seen", key="Last Seen")     
         
-        monitor_table.add_row("Live Trader", "🔴 Offline", "Never", key="live_trader")
-        monitor_table.add_row("Risk Monitor", "🔴 Offline", "Never", key="risk_monitor")
-        monitor_table.add_row("AWS Server", "🔴 Offline", "Never", key="aws_server")
+        monitor_table.add_row("Live Trader", status_offline, "Never", key="live_trader")
+        monitor_table.add_row("Risk Monitor", status_offline, "Never", key="risk_monitor")
+        monitor_table.add_row("AWS Server", status_offline, "Never", key="aws_server")
         # Map your dictionary to those exact string keys
         self.system_components = {
             "Live Trader": {"row_key": "live_trader"},

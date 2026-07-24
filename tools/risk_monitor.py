@@ -13,7 +13,7 @@ if str(ROOT_DIR) not in sys.path:
 from core.methods import ZMQErrorLogger, start_heartbeat
 from core.upstox_methods import UpstoxClient, logger
 from planner import Planner
-
+from tools.charges_calculator import charges_calculator
 # Configure ZMQ Error Logging
 zmq_handler = ZMQErrorLogger(component_name="Risk Monitor", port=5567)
 zmq_handler.setFormatter(logging.Formatter('%(message)s'))
@@ -53,7 +53,7 @@ class RiskManager:
 
         # 2. Establish Profit Target
         self.day_target = self.planner.chronological_target
-        self.target_threshold = self.day_target + self.COST_BUFFER
+        self.target_threshold = self.day_target + charges_calculator()
 
         # 3. Establish Max Loss (Based on previous day's profit)
         today_idx = plan_df.index[plan_df["Date"] == today_str].tolist()[0]
@@ -140,7 +140,9 @@ class RiskManager:
         # Calculate current net realized PnL
         positions = self.ustox.get_positions()
         current_pnl = sum(float(item.get("realised", 0.0)) for item in positions)
-        
+        charges = charges_calculator()
+        self.target_threshold = self.day_target+charges
+        self.max_loss_threshold = self.DEFAULT_MAX_LOSS - charges
         logger.info(f"Current Realized PnL: ₹{current_pnl:,.2f}")
 
         # Check thresholds
