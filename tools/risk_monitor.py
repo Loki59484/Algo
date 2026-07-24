@@ -53,7 +53,8 @@ class RiskManager:
 
         # 2. Establish Profit Target
         self.day_target = self.planner.chronological_target
-        self.target_threshold = self.day_target + charges_calculator()
+        charges = charges_calculator()
+        self.target_threshold = self.day_target + charges
 
         # 3. Establish Max Loss (Based on previous day's profit)
         today_idx = plan_df.index[plan_df["Date"] == today_str].tolist()[0]
@@ -64,6 +65,7 @@ class RiskManager:
             self.max_loss_threshold = self.DEFAULT_MAX_LOSS 
 
         logger.info(f"Target acquired from Planner: ₹{self.day_target:,.2f}")
+        logger.info(f"Current charges : ₹{charges:,.2f}")
         logger.info(f"Trading will STOP for profit at: ₹{self.target_threshold:,.2f} (Includes ₹{self.COST_BUFFER:,.2f} buffer)")
         logger.info(f"Trading will STOP for loss at: ₹{self.max_loss_threshold:,.2f} (Previous day's target)")
 
