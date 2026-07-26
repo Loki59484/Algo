@@ -160,30 +160,64 @@ class Planner:
             
         return self.DEFAULT_LIFETIME_TARGET
 
-    def _generate_compound_plan(self, gross_target: float, capital: float, multiplier: float) -> pd.DataFrame:
-        """Generates the day-by-day mathematical trading plan."""
+    def _generate_compound_plan(self, gross_target: float, capital: float, base_multiplier: float) -> pd.DataFrame:
+        """Generates the day-by-day mathematical trading plan using volatility-adjusted multipliers."""
+        
+        # 1. Define Volatility Weights (0=Monday, 4=Friday)
+        # Adjust these weights based on your historical backtested volatility!
+        # E.g., 1.2 means 20% higher target than baseline, 0.8 means 20% lower.
+        VOLATILITY_WEIGHTS = {
+            0: 1.2,  # Monday (High Nifty Movement)
+            1: 1.2,  # Tuesday (High Nifty/FinNifty Movement)
+            2: 1.0,  # Wednesday (BankNifty Expiry)
+            3: 0.9,  # Thursday (Nifty Expiry - maybe lower if you play it safe)
+            4: 1.3,  # Friday (Sensex/Bankex Expiry - High volatility)
+        }
+
         n = 0
-        # ADDED: Booked_PnL to the schema
         pltdata = {"Days": [], "Date": [], "Profit": [], "Booked_PnL": [], "Remainder": []}
         x_nplus1 = round(gross_target)
+        current_capital = capital
+        current_date = dt.datetime.today().date()
         
+        # Pre-fetch holidays to check for valid trading days
+        holidays_path = ROOT_DIR / "holidays.json"
+        if holidays_path.exists() and holidays_path.stat().st_size != 0:
+            holiday_dates = pd.to_datetime(pd.read_json(holidays_path)["date"]).dt.date.values
+        else:
+            holiday_dates = pd.to_datetime(pd.DataFrame(self.ustox.get_holidays())["date"]).dt.date.values
+
         while x_nplus1 > 0:
-            prof = round(multiplier * ((1 + multiplier) ** n) * capital)
+            # 2. Find the next valid trading day (Skip weekends & holidays)
+            while current_date.weekday() > 4 or current_date in holiday_dates:
+                current_date += dt.timedelta(days=1)
+                
+            weekday = current_date.weekday()
+            
+            # 3. Calculate today's specific multiplier
+            day_weight = VOLATILITY_WEIGHTS.get(weekday, 1.0)
+            daily_multiplier = base_multiplier * day_weight
+            
+            # 4. Calculate profit based on the running compounded capital
+            prof = round(daily_multiplier * current_capital)
             
             if prof <= 0:
                 raise ValueError(f"Calculated daily profit is {prof}. Check starting amount and multiplier.")
             
-            prof = min(prof, x_nplus1) # Prevent overshooting
+            prof = min(prof, x_nplus1) # Prevent overshooting on the final day
             x_nplus1 -= prof
             
             pltdata["Profit"].append(prof)
-            pltdata["Booked_PnL"].append(0.0) # ADDED: Initialize as 0.0
+            pltdata["Booked_PnL"].append(0.0) 
             pltdata["Remainder"].append(x_nplus1)
             pltdata["Days"].append(n + 1)
+            pltdata["Date"].append(current_date.strftime("%Y-%m-%d"))
+            
+            # 5. Compound the capital for the next day's calculation
+            current_capital += prof
+            current_date += dt.timedelta(days=1)
             n += 1
 
-        trading_dates = self.generate_trading_dates(n)
-        pltdata["Date"] = [d.strftime("%Y-%m-%d") for d in trading_dates]
         return pd.DataFrame(pltdata)
 
     def _evaluate_current_position(self, df: pd.DataFrame, gross_target: float, net_target: float, capital: float) -> None:
