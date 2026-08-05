@@ -276,6 +276,24 @@ class UpstoxClient:
                 f"Access token file not found at {TOKEN_FILE}. Please run your standalone login script."
             )
 
+    def get_sandbox_access_token(self):
+        """Strictly fetches the saved sandbox access token. Throws an error if invalid."""
+        if SANDBOX_TOKEN_FILE.exists():
+            with open(SANDBOX_TOKEN_FILE, "r+") as f:
+                data = json.load(f)
+
+            if datetime.now() > datetime.strptime(data["expiry"], "%Y-%m-%d %H:%M:%S"):
+                logger.critical("Sandbox Access token expired.")
+                raise ValueError(
+                    "Sandbox Access token expired. Please run your standalone login script to generate a new token."
+                )
+            else:
+                return data["sandbox_access_token"]
+        else:
+            logger.critical("No access token found.")
+            raise FileNotFoundError(
+                f"Access token file not found at {SANDBOX_TOKEN_FILE}. Please run your standalone login script."
+            )
     def set_static_ip(self, prim_ip: str, sec_ip: str = ""):
         url = "https://api.upstox.com/v2/user/ip"
         data = {"primary_ip": f"{prim_ip}", "secondary_ip": f"{sec_ip}"}
