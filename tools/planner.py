@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 class Planner:
     """Manages trading plans, chronological targets, and CLI reporting."""
     
-    DEFAULT_STARTING_AMOUNT = 500000.0
-    DEFAULT_LIFETIME_TARGET = 6000000.0
+    DEFAULT_STARTING_AMOUNT = 100000.0
+    DEFAULT_LIFETIME_TARGET = 50000000.0
 
     def __init__(self):
         self.ustox = UpstoxClient()
@@ -95,7 +95,6 @@ class Planner:
             report, _ = self._fetch_pnl_report() # Fetched to update Booked_PnL safely
             
             self._update_booked_pnl(df, report)
-            gross_target = df["Remainder"].iloc[0] + df["Profit"].iloc[0]
 
         # 3. Establish net target from CFO dashboard settings
         financial_target = self._get_financial_target()
@@ -139,7 +138,7 @@ class Planner:
             return df
 
         except Exception as e:
-            logger.error(f"Error predicting days: {e}")
+            logger.exception(f"Error predicting days: {e}")
             traceback.print_exc()
             return pd.DataFrame()
 
@@ -149,13 +148,14 @@ class Planner:
 
     def _get_financial_target(self) -> float:
         """Reads the financial target from the CFO Tracker state, falls back to default if missing."""
+
         try:
             if self.cfo_state_file.exists() and self.cfo_state_file.stat().st_size > 0:
                 with open(self.cfo_state_file, "r") as f:
                     state = json.load(f)
-                    # Get the target from json, defaulting to DEFAULT_LIFETIME_TARGET if key is missing
                     return float(state.get("target", self.DEFAULT_LIFETIME_TARGET))
-        except (json.JSONDecodeError, ValueError, IOError) as e:
+
+        except (ValueError, IOError) as e:
             logger.warning(f"Could not read target from {self.cfo_state_file.name}: {e}. Using default.")
             
         return self.DEFAULT_LIFETIME_TARGET
@@ -163,15 +163,12 @@ class Planner:
     def _generate_compound_plan(self, gross_target: float, capital: float, base_multiplier: float) -> pd.DataFrame:
         """Generates the day-by-day mathematical trading plan using volatility-adjusted multipliers."""
         
-        # 1. Define Volatility Weights (0=Monday, 4=Friday)
-        # Adjust these weights based on your historical backtested volatility!
-        # E.g., 1.2 means 20% higher target than baseline, 0.8 means 20% lower.
         VOLATILITY_WEIGHTS = {
-            0: 1.2,  # Monday (High Nifty Movement)
-            1: 1.2,  # Tuesday (High Nifty/FinNifty Movement)
-            2: 1.0,  # Wednesday (BankNifty Expiry)
-            3: 0.9,  # Thursday (Nifty Expiry - maybe lower if you play it safe)
-            4: 1.3,  # Friday (Sensex/Bankex Expiry - High volatility)
+            0: 1.2,  
+            1: 1.5,   
+            2: 1.2,  
+            3: 1.5,   
+            4: 0.9,
         }
 
         n = 0
