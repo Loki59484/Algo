@@ -47,7 +47,6 @@ class Planner:
         self.surplus: float = 0.0
         self.chronological_target: float = 0.0
 
-        # Environment variables
         self.previous_target: str = os.getenv("previous_target", "0")
         self.target_profit: str = os.getenv("target_profit", "0")
         self.prev_days: str = os.getenv("prev_days", "0")

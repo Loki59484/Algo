@@ -3,9 +3,11 @@ import getpass
 import http.server
 import json
 import logging
+import os
 import socketserver
 import sys
 import threading
+import time
 import urllib.parse
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -67,6 +69,55 @@ class UpstoxAuthenticator:
     PORT = 5000
     REDIRECT_URI = f"http://localhost:{PORT}/callback"
 
+    @staticmethod
+    def _wait_for_telegram_otp(timeout=60):
+        """Polls Telegram for the OTP. Returns None if it fails or times out."""
+        token = os.environ.get("TELEGRAM_TOKEN")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+        
+        if not token or not chat_id:
+            console.print("[dim yellow]Telegram credentials missing in environment. Skipping auto-OTP.[/dim yellow]")
+            return None
+
+        url = f"https://api.telegram.org/bot{token}/getUpdates"
+        
+        try:
+            # Get the latest update ID to ignore old messages
+            init_req = requests.get(url, timeout=5).json()
+            last_update_id = 0
+            if init_req.get("result"):
+                last_update_id = init_req["result"][-1]["update_id"]
+
+            start_time = time.time()
+            
+            while time.time() - start_time < timeout:
+                poll_url = f"{url}?offset={last_update_id + 1}&timeout=5"
+                response = requests.get(poll_url, timeout=10).json()
+                
+                for update in response.get("result", []):
+                    last_update_id = update["update_id"]
+                    message = update.get("message", {})
+                    sender_id = str(message.get("from", {}).get("id"))
+                    text = message.get("text", "")
+                    
+                    if sender_id == str(chat_id) and text.startswith("OTP:"):
+                        otp_code = text.replace("OTP:", "").strip()
+                        
+                        # Shred the message immediately
+                        delete_url = f"https://api.telegram.org/bot{token}/deleteMessage"
+                        requests.post(delete_url, json={"chat_id": chat_id, "message_id": message["message_id"]})
+                        
+                        return otp_code
+                        
+                time.sleep(1)
+            
+            console.print("[dim red]Telegram OTP polling timed out.[/dim red]")
+            return None
+            
+        except Exception as e:
+            console.print(f"[dim red]Telegram polling error: {e}[/dim red]")
+            return None
+
     @classmethod
     def generate_production_token(cls, show_browser: bool = False):
         """Automates the Upstox login flow via Playwright to fetch an access token."""
@@ -114,8 +165,16 @@ class UpstoxAuthenticator:
                 page.fill("#mobileNum", MOBILE_NUM)
                 page.click("#getOtp")
                 
-                # Interactive Input
-                otp = console.input("[bold green]Enter the 6-digit OTP received: [/bold green]")
+                # Try Telegram Auto-Capture First
+                console.print("[cyan]Listening for OTP via secure Telegram channel (60s timeout)...[/cyan]")
+                otp = cls._wait_for_telegram_otp(timeout=60)
+                
+                # Fallback to Manual Input
+                if otp:
+                    console.print("[bold green]✅ OTP captured securely via Telegram![/bold green]")
+                else:
+                    otp = console.input("[bold green]Enter the 6-digit OTP received: [/bold green]")
+                
                 page.fill("#otpNum", otp)
                 page.click("#continueBtn")
                 

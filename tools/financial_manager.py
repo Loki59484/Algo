@@ -5,6 +5,7 @@ import time
 import math
 from pathlib import Path
 
+from textual_pandas.widgets import DataFrameTable
 from textual import work
 from textual.screen import ModalScreen
 from textual.app import App, ComposeResult
@@ -19,6 +20,9 @@ from textual.widgets import (
     Label,
     Tree,
     DataTable,
+    TabbedContent,
+    TabPane,
+
 )
 
 from textual.widget import Widget
@@ -33,7 +37,7 @@ if str(ROOT_DIR) not in sys.path:
 from core.datatypes import Funds
 from core.upstox_methods import UpstoxClient, AWS_TAILSCALE_IP
 from tools.charges_calculator import charges_calculator
-
+from planner import Planner
 logger = logging.getLogger(__name__)
 STATE_FILE = TOOL_DIR / "finance_state.json"
 ustox = UpstoxClient()
@@ -167,45 +171,52 @@ class CFOTracker(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
+        with TabbedContent():
+            with TabPane("Dashboard"):
+                with Container(id="dashboard"):
+                    with Horizontal():
+                        yield Static(id="debt_display", classes="balance-box alert")
+                        yield Static(id="capital_display", classes="balance-box")
+                        yield Static(id="savings_display", classes="balance-box")
+                        yield Static(id="profit_display", classes="balance-box")
+                        yield Static(id="target_display", classes="balance-box")
+                        yield Static(id="base_pay_display", classes="balance-box")
 
-        with Container(id="dashboard"):
-            with Horizontal():
-                yield Static(id="debt_display", classes="balance-box alert")
-                yield Static(id="capital_display", classes="balance-box")
-                yield Static(id="savings_display", classes="balance-box")
-                yield Static(id="profit_display", classes="balance-box")
-                yield Static(id="target_display", classes="balance-box")
-                yield Static(id="base_pay_display", classes="balance-box")
+                with Horizontal():
+                    with Grid(id="data_grid"):
+                        yield Pie(data={"Trading Capital": 0, "Savings": 0}, radius=7, id="division_plot", classes="plotext_plot")
 
-        with Horizontal():
-            with Grid(id="data_grid"):
-                yield Pie(data={"Trading Capital": 0, "Savings": 0}, radius=7, id="division_plot", classes="plotext_plot")
+                        # REFACTOR 1: A single Consolidated Tree for Financial Ledger (Zero UI lag)
+                        with Static(id="history", classes="data_panes"):
+                            with Vertical():
+                                yield Tree("Financial Ledger", id="recents_tree")
+                                with Horizontal(id="tree_control_buttons"):
+                                    yield Button("Expand All", id="btn_toggle_trees", classes="tree_buttons")
 
-                # REFACTOR 1: A single Consolidated Tree for Financial Ledger (Zero UI lag)
-                with Static(id="history", classes="data_panes"):
+                        # REFACTOR 2: Professional Investment DataTable
+                        with Static(id="investments", classes="data_panes"):
+                            yield DataTable(id="investments_table")
+
+                        with Static(id="monitor", classes="data_panes"):
+                            yield DataTable(id="system_status_table")
+
                     with Vertical():
-                        yield Tree("Financial Ledger", id="recents_tree")
-                        with Horizontal(id="tree_control_buttons"):
-                            yield Button("Expand All", id="btn_toggle_trees", classes="tree_buttons")
-
-                # REFACTOR 2: Professional Investment DataTable
-                with Static(id="investments", classes="data_panes"):
-                    yield DataTable(id="investments_table")
-
-                with Static(id="monitor", classes="data_panes"):
-                    yield DataTable(id="system_status_table")
-
-            with Vertical():
-                with Container(id="log_container"):
-                    yield RichLog(id="activity_log", highlight=True, markup=True, max_lines=100, auto_scroll=True)
-                yield Static(id="package")
-
+                        with Container(id="log_container"):
+                            yield RichLog(id="activity_log", highlight=True, markup=True, max_lines=100, auto_scroll=True)
+                        yield Static(id="package")
+            with TabPane("Planner"):
+                with Container():
+                    with Horizontal():
+                        yield DataFrameTable(id='plan_table',zebra_stripes = True)
         yield Footer()
 
     def on_mount(self):
         status_online = "🟢 Online"
         status_offline = "🔴 Offline"
         log = self.query_one(RichLog)
+        planner = Planner()
+        args = planner.setup_cli()
+        plan_df = planner.create(args)
 
         if not STATE_FILE.exists() or STATE_FILE.stat().st_size <= 0:
             self.push_screen(SetupScreen(), self.init_state_callback)
@@ -222,6 +233,7 @@ class CFOTracker(App):
         self.query_one("#monitor", Static).border_title = "System Monitor"
         self.query_one("#log_container", Container).border_title = "Logs"
         self.query_one("#package", Static).border_title = "Financial Package"
+        self.query_one("#plan_table", DataFrameTable).add_df(plan_df)
 
         # Initialize the Recents Tree
         recents_tree = self.query_one("#recents_tree", Tree)

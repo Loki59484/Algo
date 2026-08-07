@@ -19,6 +19,21 @@ import threading
 logger = logging.getLogger(__name__)
 
 import numpy as np
+from requests import post
+from os import environ
+TELEGRAM_TOKEN = environ.get("TELEGRAM_TOKEN")
+CHAT_ID = environ.get("TELEGRAM_CHAT_ID")
+
+def send_telegram_update(message):
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    response = post(url, json=payload)
+    return response.status_code == 200
 
 def calculate_trade_charges(buy_price, sell_price, qty, instrument:Literal['EQ','F','O']="O", trade_type: Literal['I', 'D']="D", return_breakdown=False):
     """

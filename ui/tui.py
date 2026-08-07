@@ -8,7 +8,6 @@ from textual.widgets import (
     Static,
     RichLog,
     TabbedContent,
-    DataTable,
     TabPane,
     Input,
     Button

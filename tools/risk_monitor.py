@@ -25,7 +25,7 @@ class RiskManager:
 
     # Configurable Constants
     COST_BUFFER = 5000.0
-    TRADE_PROFIT_TARGET = 1700.0
+    TRADE_PROFIT_TARGET = 3000.0
     DEFAULT_MAX_LOSS = -5000.0
     TICK_SIZE = 0.05
     SLEEP_AFTER_KILL = 12 * 60 * 60  # 12 hours in seconds
@@ -90,6 +90,7 @@ class RiskManager:
 
     async def _process_stream(self, queue: asyncio.Queue) -> None:
         """Consumes updates from the WebSocket queue."""
+
         while True:
             logger.info("Awaiting update...")
             update: Dict[str, Any] = await queue.get()
