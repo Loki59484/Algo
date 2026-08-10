@@ -24,6 +24,31 @@ from os import environ
 TELEGRAM_TOKEN = environ.get("TELEGRAM_TOKEN")
 CHAT_ID = environ.get("TELEGRAM_CHAT_ID")
 
+import pyotp
+import time
+
+def generate_setup_code(secret_key: str):
+    """
+    Generates the current TOTP code and shows the time remaining 
+    before it refreshes.
+    """
+    # Initialize the TOTP object with your Upstox secret
+    totp = pyotp.TOTP(secret_key)
+    
+    # Get the active 6-digit code
+    current_code = totp.now()
+    
+    # TOTP codes refresh every 30 seconds. 
+    # This calculates how many seconds are left in the current window.
+    time_remaining = 30 - (int(time.time()) % 30)
+    
+    print("\n=== Upstox TOTP Setup ===")
+    print(f"Current Code: {current_code}")
+    print(f"Time Remaining: {time_remaining} seconds")
+    print("=========================\n")
+    
+    return current_code
+
 def send_telegram_update(message):
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"

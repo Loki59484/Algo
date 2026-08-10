@@ -40,7 +40,7 @@ class Planner:
         self.groww_pnl: float = 468045.54
         self.starting_amount: float = 0.0
         self.pnl: float = 0.0
-        
+
         # Plan state
         self.df_plan: pd.DataFrame = pd.DataFrame()
         self.days_remaining: int = 0
@@ -51,7 +51,8 @@ class Planner:
         self.target_profit: str = os.getenv("target_profit", "0")
         self.prev_days: str = os.getenv("prev_days", "0")
         self.prev_starting: str = os.getenv("prev_starting", "0")
-
+        self.current_multiplier: float = float(os.getenv("current_multiplier", "0.1"))
+    
     def setup_cli(self) -> argparse.Namespace:
         """Parses command line arguments."""
         parser = argparse.ArgumentParser(
@@ -72,8 +73,10 @@ class Planner:
     
     def create(self, args: argparse.Namespace) -> pd.DataFrame:
         """Main entry point to establish the baseline and generate the plan."""
+        if isinstance(args, dict):
+            args = argparse.Namespace(**args)  # Ensure args is a Namespace object
         if args.force:
-            self._reset_environment_variables()
+            self._reset_environment_variables(multiplier=args.multiplier)
 
         # 1. Establish current live state
         self.pnl = self._calculate_current_pnl()
@@ -231,7 +234,7 @@ class Planner:
             target_prof_str = str(df["Profit"].iloc[next_idx])
             p_days_str = str(len(df) - (current_idx + 1))
             
-        self._update_environment_variables(curr_target_str, target_prof_str, p_days_str, str(capital))
+        self._update_environment_variables(curr_target_str, target_prof_str, p_days_str, str(capital),str(self.current_multiplier))
         self.days_remaining = int(p_days_str)
         
         today_str = dt.datetime.today().date().strftime("%Y-%m-%d")
@@ -297,21 +300,24 @@ class Planner:
         positions = self.ustox.get_positions()
         return sum(item.get("realised", 0.0) for item in positions)
 
-    def _update_environment_variables(self, curr_target: str, target_prof: str, prev_days: str, prev_start: str) -> None:
+    def _update_environment_variables(self, curr_target: str, target_prof: str, prev_days: str, prev_start: str, multipier: str) -> None:
         """Updates state parameters safely to memory and .env file."""
         self.previous_target = os.environ["previous_target"] = curr_target
         self.target_profit = os.environ["target_profit"] = target_prof
         self.prev_days = os.environ["prev_days"] = prev_days
         self.prev_starting = os.environ["prev_starting"] = prev_start
+        self.current_multiplier = float(multipier)
+        os.environ["current_multiplier"] = str(multipier)
 
         set_key(ENV_PATH, "previous_target", curr_target)
         set_key(ENV_PATH, "target_profit", target_prof)
         set_key(ENV_PATH, "prev_days", prev_days)
         set_key(ENV_PATH, "prev_starting", prev_start)
+        set_key(ENV_PATH, "current_multiplier", multipier)
 
-    def _reset_environment_variables(self) -> None:
+    def _reset_environment_variables(self, multiplier) -> None:
         """Resets the environment tracking variables to zero."""
-        self._update_environment_variables("0", "0", "0", "0")
+        self._update_environment_variables("0", "0", "0", "0",str(multiplier))
 
     # -------------------------------------------------------------------------
     # UTILITIES & CLI OUTPUT

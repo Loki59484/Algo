@@ -98,3 +98,20 @@ Button {
 #data_label, #plot_label {
     margin-top: 1;
 }
+
+#plan_table {
+    width: 50%;
+    height:100%;
+}
+
+#plan_summary {
+    border: round cyan; 
+    padding:1;
+    height:50%;
+}
+
+#plan_params {
+    padding: 1;
+    border: round cyan; 
+
+}

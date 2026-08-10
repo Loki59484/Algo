@@ -38,6 +38,7 @@ from core.datatypes import Funds
 from core.upstox_methods import UpstoxClient, AWS_TAILSCALE_IP
 from tools.charges_calculator import charges_calculator
 from planner import Planner
+
 logger = logging.getLogger(__name__)
 STATE_FILE = TOOL_DIR / "finance_state.json"
 ustox = UpstoxClient()
@@ -155,6 +156,67 @@ class SetupScreen(ModalScreen[dict]):
                 self.query_one(Label).update("[bold red]Error in fetching upstox data. Please enter manually.[/bold red]")
 
 
+class EditPlanParamsScreen(ModalScreen[dict]):
+    """A popup screen to edit all planner parameters at once."""
+    
+    DEFAULT_CSS = """
+    EditPlanParamsScreen {
+        align: center middle;
+    }
+    #edit_plan_dialog {
+        width: 50;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: thick $background 80%;
+    }
+    .param-input {
+        margin-bottom: 1;
+    }
+    #edit_buttons {
+        margin-top: 1;
+        width: 100%;
+        align: center middle;
+    }
+    """
+
+    def __init__(self, planner, **kwargs):
+        super().__init__(**kwargs)
+        self.planner = planner
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="edit_plan_dialog"):
+            yield Label("[b]Edit Financial Plan Parameters[/b]\n")
+            
+            yield Label("Multiplier:")
+            yield Input(value=str(getattr(self.planner, 'current_multiplier', "")), id="inp_multiplier", classes="param-input")
+            
+            yield Label("Starting Amount (₹):")
+            yield Input(value=str(getattr(self.planner, 'starting_amount', "")), id="inp_starting_amount", classes="param-input")
+            
+            yield Label("Target (₹):")
+            yield Input(value=str(getattr(self.planner, 'target', "")), id="inp_target", classes="param-input")
+            
+            with Horizontal(id="edit_buttons"):
+                yield Button("Save & Recalculate", id="btn_save_plan", variant="success")
+                yield Button("Cancel", id="btn_cancel_plan", variant="error")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn_save_plan":
+            try:
+                new_args = {
+                    "multiplier": float(self.query_one("#inp_multiplier", Input).value),
+                    "starting_amount": float(self.query_one("#inp_starting_amount", Input).value),
+                    "target": float(self.query_one("#inp_target", Input).value),
+                }
+                self.label = "Recalculating..."
+                self.dismiss(new_args)
+            except ValueError:
+                pass 
+        elif event.button.id == "btn_cancel_plan":
+            self.dismiss(None)
+
+
 # -----------------------------------------------------------------------------
 # MAIN DASHBOARD
 # -----------------------------------------------------------------------------
@@ -168,7 +230,7 @@ class CFOTracker(App):
         super().__init__(*args, **kwargs)
         self._is_shutting_down = False
         self.incoming_data = {"Live Trader": 0, "Risk Monitor": 0, "AWS Server": 0}
-
+        
     def compose(self) -> ComposeResult:
         yield Header()
         with TabbedContent():
@@ -186,14 +248,12 @@ class CFOTracker(App):
                     with Grid(id="data_grid"):
                         yield Pie(data={"Trading Capital": 0, "Savings": 0}, radius=7, id="division_plot", classes="plotext_plot")
 
-                        # REFACTOR 1: A single Consolidated Tree for Financial Ledger (Zero UI lag)
                         with Static(id="history", classes="data_panes"):
                             with Vertical():
                                 yield Tree("Financial Ledger", id="recents_tree")
                                 with Horizontal(id="tree_control_buttons"):
                                     yield Button("Expand All", id="btn_toggle_trees", classes="tree_buttons")
 
-                        # REFACTOR 2: Professional Investment DataTable
                         with Static(id="investments", classes="data_panes"):
                             yield DataTable(id="investments_table")
 
@@ -205,18 +265,30 @@ class CFOTracker(App):
                             yield RichLog(id="activity_log", highlight=True, markup=True, max_lines=100, auto_scroll=True)
                         yield Static(id="package")
             with TabPane("Planner"):
-                with Container():
-                    with Horizontal():
-                        yield DataFrameTable(id='plan_table',zebra_stripes = True)
+                with Horizontal():
+                    yield DataFrameTable(id='plan_table', zebra_stripes=True)
+                    with Vertical():
+                        yield Static(id='plan_summary')
+                        yield DataTable(id='plan_params', cursor_type="none")
+                        yield Button("Edit Parameters", id="btn_edit_plan", variant="primary")
+                            
         yield Footer()
 
     def on_mount(self):
-        status_online = "🟢 Online"
         status_offline = "🔴 Offline"
         log = self.query_one(RichLog)
-        planner = Planner()
-        args = planner.setup_cli()
-        plan_df = planner.create(args)
+        
+        self.planner = Planner()
+        self.planner_args = self.planner.setup_cli()
+        plan_df = self.planner.create(self.planner_args)
+        
+        # Setup Plan Params DataTable
+        plan_table = self.query_one("#plan_params", DataTable)
+        plan_table.add_column("Parameter", key="Parameter")
+        plan_table.add_column("Value", key="Value")
+        plan_table.add_row("Multiplier", f"{self.planner.current_multiplier}", key="multiplier")
+        plan_table.add_row("Starting Amount", f"₹{self.planner.starting_amount:,.2f}", key="starting_amount")
+        plan_table.add_row("Target", f"₹{self.planner.target:,.2f}", key="target")
 
         if not STATE_FILE.exists() or STATE_FILE.stat().st_size <= 0:
             self.push_screen(SetupScreen(), self.init_state_callback)
@@ -224,8 +296,7 @@ class CFOTracker(App):
             self.state = self.load_state()
             self.update_ui()
             log.write(f"[bold cyan]Hello {self.state.get('user', 'User')}, This is your personal CFO![/bold cyan]")
-
-        # Apply borders
+            
         self.query_one("#dashboard", Container).border_title = "Financial Summary"
         self.query_one("#division_plot", Pie).border_title = "Division of Funds"
         self.query_one("#history", Static).border_title = "Recents Ledger"
@@ -233,9 +304,10 @@ class CFOTracker(App):
         self.query_one("#monitor", Static).border_title = "System Monitor"
         self.query_one("#log_container", Container).border_title = "Logs"
         self.query_one("#package", Static).border_title = "Financial Package"
+        
         self.query_one("#plan_table", DataFrameTable).add_df(plan_df)
+        self.update_plan_summary()
 
-        # Initialize the Recents Tree
         recents_tree = self.query_one("#recents_tree", Tree)
         recents_tree.root.expand()
         self.t_expenses = recents_tree.root.add("Expenses", expand=False)
@@ -246,24 +318,20 @@ class CFOTracker(App):
         inv_table = self.query_one("#investments_table", DataTable)
         inv_table.cursor_type = "row"
         
-        # FIX 1: Explicitly set the keys for the Investment columns
-        inv_table.add_column("Asset Class", key="Asset Class")
+        inv_table.add_column("Asset Class", key="Asset Class",)
         inv_table.add_column("Invested (₹)", key="Invested (₹)")
         inv_table.add_column("Current (₹)", key="Current (₹)")
         inv_table.add_column("Status/P&L", key="Status/P&L")
         inv_table.add_column("Duration/Summary", key="Duration/Summary")
         
-        # We assign keys to these rows so we can update them seamlessly later
         inv_table.add_row("Mutual Funds", "0.0", "0.0", "-", "Long Term", key="mf")
         inv_table.add_row("Stocks", "0.0", "0.0", "-", "Swing/Hold", key="stk")
         inv_table.add_row("Options", "0.0", "0.0", "-", "Awaiting Sync", key="opt")
         inv_table.add_row("Fixed Deposits", "0.0", "0.0", "-", "Locked", key="fd")
 
-        # Initialize System Monitor DataTable
         monitor_table = self.query_one("#system_status_table", DataTable)
         monitor_table.cursor_type = "none" 
         
-        # FIX 2: Explicitly set the keys for the Monitor columns
         monitor_table.add_column("Component", key="Component")
         monitor_table.add_column("Status", key="Status")
         monitor_table.add_column("Last Seen", key="Last Seen")     
@@ -271,7 +339,7 @@ class CFOTracker(App):
         monitor_table.add_row("Live Trader", status_offline, "Never", key="live_trader")
         monitor_table.add_row("Risk Monitor", status_offline, "Never", key="risk_monitor")
         monitor_table.add_row("AWS Server", status_offline, "Never", key="aws_server")
-        # Map your dictionary to those exact string keys
+        
         self.system_components = {
             "Live Trader": {"row_key": "live_trader"},
             "Risk Monitor": {"row_key": "risk_monitor"},
@@ -282,11 +350,7 @@ class CFOTracker(App):
 
         self.zmq_listener()
         self.set_interval(1.0, self.check_heartbeats)
-        
-        # ADD THIS: Run the API fetch in the background once on startup
         self.sync_investment_data()
-        
-        # ADD THIS (Optional): Automatically refresh the charges from the API every 1 hour (3600 seconds)
         self.set_interval(3600.0, self.sync_investment_data)    
     
     def _log_remote_error(self, component: str, msg: str):
@@ -335,6 +399,7 @@ class CFOTracker(App):
         self.state = new_state
         self.save_state()
         self.update_ui()
+        
         log = self.query_one(RichLog)
         log.write("[bold green]Corporate setup complete. Data initialized![/bold green]")
         log.write(f"[bold cyan]Hello {self.state.get('user', 'User')}, This is your personal CFO![/bold cyan]")
@@ -367,6 +432,49 @@ class CFOTracker(App):
             json.dump(self.state, f, indent=4)
         self.update_ui()
 
+    def update_plan_summary(self):
+        """Extracts stats from the planner and updates the summary widget."""
+        import datetime as dt
+        
+        if not hasattr(self, "planner"):
+            return
+
+        # Calculate chronological days left based on the dataframe
+        days_left_text = "N/A"
+        target_date_text = "N/A"
+        if self.planner.df_plan is not None and not self.planner.df_plan.empty:
+            final_date_str = self.planner.df_plan.iloc[-1]["Date"]
+            final_date_obj = dt.datetime.strptime(final_date_str, "%Y-%m-%d").date()
+            days_left = (final_date_obj - dt.datetime.today().date()).days
+            
+            days_left_text = f"{days_left} days"
+            target_date_text = final_date_obj.strftime('%d %B %Y')
+
+        # Format the surplus with colors
+        if self.planner.surplus > 0:
+            surplus_text = f"[bold green]+₹{self.planner.surplus:,.2f} (Ahead of plan 🚀)[/bold green]"
+        elif self.planner.surplus < 0:
+            surplus_text = f"[bold red]-₹{abs(self.planner.surplus):,.2f} (Behind plan ⚠️)[/bold red]"
+        else:
+            surplus_text = "[bold]₹0.00 (Exactly on track)[/bold]"
+
+        # Construct the summary block
+        summary_text = (
+            f"[bold cyan]📊 TRADING PLAN REPORT[/bold cyan]\n"
+            f"{'═'*50}\n"
+            f"[b]Target Remaining[/b]:              ₹{self.planner.target:,.2f}\n"
+            f"[b]Day's Starting Amount[/b]:         ₹{self.planner.starting_amount:,.2f}\n"
+            f"[b]Today's Planned Target[/b]:        ₹{self.planner.chronological_target:,.2f}\n"
+            f"[b]Today's Current P&L[/b]:           ₹{self.planner.pnl:,.2f}\n"
+            f"{'─'*50}\n"
+            f"[b]Performance Surplus[/b]:           {surplus_text}\n"
+            f"[b]Projected Trading Days Left[/b]:   {self.planner.days_remaining} days\n"
+            f"[b]Projected Normal Days Left[/b]:    {days_left_text}\n"
+            f"[b]Projected Target Date[/b]:         [bold yellow]{target_date_text}[/bold yellow]\n"
+        )
+        
+        self.query_one("#plan_summary", Static).update(summary_text)
+    
     def update_ui(self):
         if not hasattr(self, "state"):
             return
@@ -391,17 +499,40 @@ class CFOTracker(App):
         )
         self.query_one("#package", Static).update(package_text)
 
-# ... [Keep the package_text update] ...
-
         plot_widget = self.query_one("#division_plot", Pie)
         plot_widget.data = {
             "Trading Capital": self.state["trading_capital"],
             "Savings (Treasury)": self.state["savings"],
         }
         plot_widget.refresh()
-        
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_save_setup":
+            return
+            
+        if event.button.id == "btn_edit_plan":
+            def check_plan_edit(new_args: dict | None):
+
+                if new_args is not None:
+                    self.planner.current_multiplier = new_args['multiplier']
+                    self.planner.starting_amount = new_args['starting_amount']
+                    self.planner.target = new_args['target']
+                    new_args["force"] = True
+
+                    plan_table = self.query_one("#plan_table", DataFrameTable)
+                    plan_table_params = self.query_one("#plan_params", DataTable)
+                    plan_table_params.update_cell("multiplier", "Value", f"{new_args['multiplier']}")
+                    plan_table_params.update_cell("starting_amount", "Value", f"₹{new_args['starting_amount']:,.2f}")
+                    plan_table_params.update_cell("target", "Value", f"₹{new_args['target']:,.2f}")
+                    new_plan_df = self.planner.create(new_args)                    
+                    plan_table.update_df(new_plan_df)
+                    self.update_plan_summary()
+                    
+                    # 5. Log the update
+                    log = self.query_one(RichLog)
+                    log.write("[bold green]Plan recalculated[/bold green] with newly saved parameters!")
+
+            self.push_screen(EditPlanParamsScreen(self.planner), check_plan_edit)
             return
 
         if event.button.id == "btn_toggle_trees":
@@ -419,7 +550,6 @@ class CFOTracker(App):
     def sync_investment_data(self):
         """Fetches heavy API data like charges in the background without freezing the UI."""
         
-        # 1. Tell the UI we are fetching (Safely pushed to Main Thread)
         def set_fetching():
             fetching = "[bold yellow]Fetching...[/bold yellow]"
             try:
@@ -432,11 +562,10 @@ class CFOTracker(App):
                 
         self.call_from_thread(set_fetching)
         
-        # 2. Do the heavy network lifting in the background thread
         try:
             charges = charges_calculator()
             capital: Funds = Funds.update_from_json(ustox.get_funds())
-            # 3. Tell the UI to apply the fetched data (Safely pushed to Main Thread)
+            
             def _calculate_current_pnl() -> float:
                 """Fetches live positions to calculate today's realized PnL."""
                 positions = ustox.get_positions()
@@ -458,7 +587,6 @@ class CFOTracker(App):
         except Exception as e:
             logger.exception(f"Network error syncing charges: {e}")
             
-            # 4. Handle errors cleanly on the UI
             def set_error():
                 try:
                     inv_table = self.query_one("#investments_table", DataTable)
