@@ -7,25 +7,25 @@ from typing import Literal
 from pathlib import Path
 import pyarrow as pa
 import pandas as pd
+import threading
+import datetime
 import logging
 import hashlib
 import json
-import datetime
-import zmq
 import time
-import threading
+import zmq
 
 # SET UP LOGGING
 logger = logging.getLogger(__name__)
 
-import numpy as np
 from requests import post
 from os import environ
-TELEGRAM_TOKEN = environ.get("TELEGRAM_TOKEN")
-CHAT_ID = environ.get("TELEGRAM_CHAT_ID")
-
+import numpy as np
 import pyotp
 import time
+
+TELEGRAM_TOKEN = environ.get("TELEGRAM_TOKEN")
+CHAT_ID = environ.get("TELEGRAM_CHAT_ID")
 
 def generate_setup_code(secret_key: str):
     """

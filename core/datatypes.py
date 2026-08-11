@@ -14,7 +14,7 @@ import pandas as pd
 import numpy as np
 import logging
 import sys
-import os
+import json
 
 """
 This module contains custom dataclasses for smooth handling of trading data.
@@ -29,7 +29,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 # IMPORTING CUSTOM MODULES
-from core.methods import to_ist, load_parquet
+from core.methods import to_ist, parse_obj_to_dataclass
 
 
 class DatatypeBase:
@@ -339,6 +339,107 @@ class Position(DatatypeBase):
             if hasattr(self, key):
                 setattr(self, key, value)
 
+
+
+@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
+class Portfolio:
+    funds: Funds = field(default_factory=Funds)
+    positions: dict[str, Position] = field(default_factory=dict)
+    report: list[Trade] = field(default_factory=list)
+
+    def get_report(self, verbose=True) -> pd.DataFrame:
+
+        data = [asdict(trade) for trade in self.report]
+        df = pd.json_normalize(data)
+        if df.empty:
+            return pd.DataFrame()
+        df.sort_values(by="buy_timestamp").reset_index(drop=True)
+        if verbose:
+            from num2words import num2words
+
+        display_df = df.copy()
+        if "trade_id" in display_df.columns:
+            display_df = display_df.drop(columns=["trade_id"])
+
+        # 1. Round the dataframe FIRST
+        float_cols = display_df.select_dtypes(include=["float"]).columns
+        display_df[float_cols] = display_df[float_cols].round(2)
+
+        # 2. Print with floatfmt=".2f" to forcefully format all floats in the markdown table
+        print(
+            display_df[
+                [
+                    "buy_timestamp",
+                    "pnl",
+                    "remark",
+                    "buy_qty",
+                    "sell_qty",
+                    "buy_price",
+                    "sell_price",
+                ]
+            ].to_markdown(tablefmt="pretty", floatfmt=".2f")
+        )
+
+        print(f"Total movement: {display_df['movement'].sum():.2f}")
+        print(f"Final pnl: {display_df['pnl'].sum():.2f}")
+        print(
+            f"Final pnl (words): {num2words(display_df['pnl'].sum().round(), lang='en_IN')}"
+        )
+
+        # 3. Use single quotes inside the method arguments to avoid breaking the f-string
+        logger.info(
+            f"Final Results:\n{display_df.to_markdown(tablefmt='pretty', floatfmt='.2f')}"
+        )
+        logger.info(f"Total movement: {display_df['movement'].sum():.2f}")
+        logger.info(f"Final pnl: {display_df['pnl'].sum():.2f}")
+        return df
+
+
+@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
+class Bucket:
+    """A Bucket to collect instruments for being traded together."""
+
+    date: datetime
+    tag: str | None = None
+    spot: Instrument | None = None
+    legs: dict[str, Instrument] = field(default_factory=dict)
+    open_position: Position | None = None
+    probability_matrix: Any = None
+    pending_entry: Any = None
+    pending_exit: Any = None 
+    def add_leg(self, item: Instrument | dict[str, Instrument], leg_type):
+        """Adds Instrument instances as legs to a bucket object.
+
+        Args:
+            item (Instrument | dict[str, Instrument]): A single Instrument instance or a dict of Instrument instances.
+            If passing an Instrument instance, an option of `leg_type` can also be passed. `leg_type` defaults to `Instrument.type`.
+            If passing as a dict, ensure key:value pair is of `{"leg_type":Instrument}` form.
+
+        """
+        if isinstance(item, dict):
+            self.legs = {**self.legs, **item}
+        elif isinstance(item, Instrument):
+            key = leg_type if leg_type is not None else item.type
+            self.legs[key] = item
+
+
+@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
+class Trade:
+    trade_id: None | str = None
+    instrument_key: None | str = None
+    side: None | str = None
+    buy_timestamp: None | datetime = None
+    buy_price: None | float = None
+    buy_qty: None | int = None
+    sell_timestamp: None | datetime = None
+    sell_price: None | float = None
+    sell_qty: None | int = None
+    movement: None | float = None
+    pnl: None | float = None
+    remark: None | str = ""
+    buy_conditions: None | dict = None
+    sell_conditions: None | dict = None
+    total: None | float = None
 
 class Instrument:
     """
@@ -692,103 +793,30 @@ class Instrument:
             ]
         return candles
 
+@dataclass
+class FinancialState:
+    user: str = "USER"
+    debt: float = 0.0
+    trading_capital: float = 100000.0      # Maps to starting_amount
+    savings: float = 0.0
+    unrealized_profit: float = 0.0
+    target: float = 50000000.0             # Maps to lifetime target
+    base_pay: float = 0.0
+    growth_factor: float = 0.1             # Maps to current_multiplier
+    external_pnl: float = 468045.54        # Maps to past losses/profits 
 
-@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
-class Portfolio:
-    funds: Funds = field(default_factory=Funds)
-    positions: dict[str, Position] = field(default_factory=dict)
-    report: list[Trade] = field(default_factory=list)
+    @classmethod
+    def load_from_file(cls, path: Path):
+        """Loads state from JSON. Gracefully handles missing files or extra keys."""
+        if not path.exists() or path.stat().st_size == 0:
+            return cls()
+            
+        with open(path, "r") as f:
+            state_dict = json.load(f)
+            return parse_obj_to_dataclass(cls,state_dict)            
 
-    def get_report(self, verbose=True) -> pd.DataFrame:
-
-        data = [asdict(trade) for trade in self.report]
-        df = pd.json_normalize(data)
-        if df.empty:
-            return pd.DataFrame()
-        df.sort_values(by="buy_timestamp").reset_index(drop=True)
-        if verbose:
-            from num2words import num2words
-
-        display_df = df.copy()
-        if "trade_id" in display_df.columns:
-            display_df = display_df.drop(columns=["trade_id"])
-
-        # 1. Round the dataframe FIRST
-        float_cols = display_df.select_dtypes(include=["float"]).columns
-        display_df[float_cols] = display_df[float_cols].round(2)
-
-        # 2. Print with floatfmt=".2f" to forcefully format all floats in the markdown table
-        print(
-            display_df[
-                [
-                    "buy_timestamp",
-                    "pnl",
-                    "remark",
-                    "buy_qty",
-                    "sell_qty",
-                    "buy_price",
-                    "sell_price",
-                ]
-            ].to_markdown(tablefmt="pretty", floatfmt=".2f")
-        )
-
-        print(f"Total movement: {display_df['movement'].sum():.2f}")
-        print(f"Final pnl: {display_df['pnl'].sum():.2f}")
-        print(
-            f"Final pnl (words): {num2words(display_df['pnl'].sum().round(), lang='en_IN')}"
-        )
-
-        # 3. Use single quotes inside the method arguments to avoid breaking the f-string
-        logger.info(
-            f"Final Results:\n{display_df.to_markdown(tablefmt='pretty', floatfmt='.2f')}"
-        )
-        logger.info(f"Total movement: {display_df['movement'].sum():.2f}")
-        logger.info(f"Final pnl: {display_df['pnl'].sum():.2f}")
-        return df
-
-
-@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
-class Bucket:
-    """A Bucket to collect instruments for being traded together."""
-
-    date: datetime
-    tag: str | None = None
-    spot: Instrument | None = None
-    legs: dict[str, Instrument] = field(default_factory=dict)
-    open_position: Position | None = None
-    probability_matrix: Any = None
-    pending_entry: Any = None
-    pending_exit: Any = None 
-    def add_leg(self, item: Instrument | dict[str, Instrument], leg_type):
-        """Adds Instrument instances as legs to a bucket object.
-
-        Args:
-            item (Instrument | dict[str, Instrument]): A single Instrument instance or a dict of Instrument instances.
-            If passing an Instrument instance, an option of `leg_type` can also be passed. `leg_type` defaults to `Instrument.type`.
-            If passing as a dict, ensure key:value pair is of `{"leg_type":Instrument}` form.
-
-        """
-        if isinstance(item, dict):
-            self.legs = {**self.legs, **item}
-        elif isinstance(item, Instrument):
-            key = leg_type if leg_type is not None else item.type
-            self.legs[key] = item
-
-
-@dataclass(slots=True, config=ConfigDict(arbitrary_types_allowed=True))
-class Trade:
-    trade_id: None | str = None
-    instrument_key: None | str = None
-    side: None | str = None
-    buy_timestamp: None | datetime = None
-    buy_price: None | float = None
-    buy_qty: None | int = None
-    sell_timestamp: None | datetime = None
-    sell_price: None | float = None
-    sell_qty: None | int = None
-    movement: None | float = None
-    pnl: None | float = None
-    remark: None | str = ""
-    buy_conditions: None | dict = None
-    sell_conditions: None | dict = None
-    total: None | float = None
+    def save_to_file(self, path: Path):
+        """Saves current state to JSON."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(asdict(self), f, indent=4)

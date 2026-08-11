@@ -1,0 +1,21 @@
+EditPlanParamsScreen {
+    }
+
+#edit_plan_dialog {
+        width: 50;
+        height: 50;
+        padding: 1 2;
+        background: $surface;
+        border: thick cyan 20%;
+        border-left:blank;
+    }
+
+.param-input {
+        margin-bottom: 1;
+    }
+
+    #edit_buttons {
+        margin-top: 25;
+        width: 100%;
+        align: center middle;
+    }
