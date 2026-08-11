@@ -5,11 +5,13 @@ Module containing custom functions exclusively used by the program.
 import pyarrow.parquet as pq
 from typing import Literal
 from pathlib import Path
+from telegram import Bot
 import pyarrow as pa
 import pandas as pd
 import threading
 import datetime
 import logging
+import requests
 import hashlib
 import json
 import time
@@ -26,6 +28,17 @@ import time
 
 TELEGRAM_TOKEN = environ.get("TELEGRAM_TOKEN")
 CHAT_ID = environ.get("TELEGRAM_CHAT_ID")
+
+def send_telegram_update(message):
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    response = post(url, json=payload)
+    return response.status_code == 200
 
 def generate_setup_code(secret_key: str):
     """
@@ -48,17 +61,6 @@ def generate_setup_code(secret_key: str):
     print("=========================\n")
     
     return current_code
-
-def send_telegram_update(message):
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-    response = post(url, json=payload)
-    return response.status_code == 200
 
 def calculate_trade_charges(buy_price, sell_price, qty, instrument:Literal['EQ','F','O']="O", trade_type: Literal['I', 'D']="D", return_breakdown=False):
     """
@@ -177,6 +179,23 @@ class ZMQErrorLogger(logging.Handler):
                 logger.info(f"Error msg sent : {error_msg}")
             except Exception:
                 self.handleError(record)
+
+
+class TelegramHandler(logging.Handler):
+    def __init__(self, bot_token: str, chat_id: str, level=logging.NOTSET):
+        super().__init__(level)
+        self.chat_id = chat_id
+        self.url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        self.session = requests.Session()
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            message = self.format(record)
+            payload = {"chat_id": self.chat_id, "text": message, "parse_mode": "Markdown"}
+            self.session.post(self.url, json=payload, timeout=5)
+        except Exception:
+            self.handleError(record)
+
 
 def start_heartbeat(component_name: str, port: int):
     """Starts a background thread that broadcasts a ping every second."""

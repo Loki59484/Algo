@@ -14,58 +14,44 @@ from ml.database_builder import TESTING_DATA_PATH
 ustox = UpstoxClient()
 
 # =====================================================================
-# 1. HARDCODE YOUR BEST PARAMETERS HERE
+# 1. OPTUNA VALIDATED PARAMETERS (5-MIN TIMEFRAME)
 # =====================================================================
 BEST_PARAMS = {
-    "rsi_min": 66,
-    "adx_min": 45,
-    "adx_max" : 74,
+    "rsi_min": 60,
+    "adx_min": 25,
+    "adx_max": 75,
     "use_ema": True,
     "use_supertrend": False,
     "req_active_slope": False,
     "use_macd": False,
     "bb_max_width": 0.035,
-    "sl_atr": 2,
-    "target_atr": 6,
-    "trailing_sl_atr": 1.7,
+    "sl_atr": 1.5,
+    "target_atr": 5.0,
+    "trailing_sl_atr": 1.2,
     "max_daily_trades": 3,
-    "max_daily_profit": 8458,
+    "max_daily_profit": 12000,
 }
 
 if not TESTING_DATA_PATH.exists():
-     raise FileNotFoundError(f"Could not find {TESTING_DATA_PATH}. Did you run the database_builder.py script?")
- 
-df = pd.read_parquet(TESTING_DATA_PATH)
+    raise FileNotFoundError(f"Could not find {TESTING_DATA_PATH}. Did you run database_builder.py?")
 
+df = pd.read_parquet(TESTING_DATA_PATH)
 if not isinstance(df.index, pd.DatetimeIndex):
     df.index = pd.to_datetime(df.index)
 
-# Pre-extract base arrays
+# Pre-extract base 1-minute arrays for execution simulation
 DATES = df.index.date
 CE_HIGH = df['ce_high'].values
 CE_LOW = df['ce_low'].values
 CE_CLOSE = df['ce_close'].values
-CE_NEXT_OPEN = df['ce_next_open'].values  # NEW: Latency simulator
+CE_NEXT_OPEN = df['ce_next_open'].values
 
-# Extract PE arrays for bearish trades
 PE_HIGH = df['pe_high'].values
 PE_LOW = df['pe_low'].values
 PE_CLOSE = df['pe_close'].values
-PE_NEXT_OPEN = df['pe_next_open'].values  # NEW: Latency simulator
+PE_NEXT_OPEN = df['pe_next_open'].values
 
-# Extract Trend & Filter arrays
-SPOT_CLOSE = df['close'].values
-EMA_200 = df['EMA_200'].values  
-SUPERTD = df['SUPERTd'].values
-SUPERT_SLOPE = df['SUPERT_slope'].values
-MACD = df['MACD'].values
-MACD_SIG = df['MACD_signal'].values
-BB_WIDTH = df['BB_width'].values
-
-# =====================================================================
-# 1.5 DYNAMIC LOT SIZE & TAX CALCULATOR
-# =====================================================================
-SLIPPAGE = 0.1  # Constant Spread slippage applied to market orders
+SLIPPAGE = 0.25  # Constant Spread slippage on market orders
 
 def get_nifty_lot_size(trade_date):
     if trade_date >= pd.Timestamp("2026-01-01").date(): return 65
@@ -85,7 +71,75 @@ def calculate_options_charges(buy_price, sell_price, qty):
     return brokerage + stt + txn_charge + sebi_charge + stamp_duty + gst
 
 # =====================================================================
-# 4. UNIFIED CHRONOLOGICAL EVALUATOR
+# 2. MULTI-TIMEFRAME RESAMPLING FOR STRATEGY SIGNALS
+# =====================================================================
+print("Resampling 1-minute data into 5-minute candles for signal generation...")
+
+df_5m = df.resample('5min', origin='start_day').agg({
+    'close': 'last',
+    'RSI': 'last',
+    'ADX': 'last',
+    'EMA_200': 'last',
+    'SUPERTd': 'last',
+    'SUPERT_slope': 'last',
+    'MACD': 'last',
+    'MACD_signal': 'last',
+    'BB_width': 'last',
+    'ce_ATR': 'last',
+    'pe_ATR': 'last',
+}).dropna()
+
+ce_mask_5m = (df_5m['RSI'] > BEST_PARAMS['rsi_min']) & (df_5m['ADX'] > BEST_PARAMS['adx_min']) & (df_5m['ADX'] < BEST_PARAMS['adx_max'])
+pe_mask_5m = (df_5m['RSI'] < (100 - BEST_PARAMS['rsi_min'])) & (df_5m['ADX'] > BEST_PARAMS['adx_min']) & (df_5m['ADX'] < BEST_PARAMS['adx_max'])
+
+if BEST_PARAMS['use_ema']:
+    ce_mask_5m &= (df_5m['close'] > df_5m['EMA_200'])
+    pe_mask_5m &= (df_5m['close'] < df_5m['EMA_200'])
+
+if BEST_PARAMS['use_supertrend']:
+    ce_mask_5m &= (df_5m['SUPERTd'] == 1)
+    pe_mask_5m &= (df_5m['SUPERTd'] == -1)
+
+if BEST_PARAMS['req_active_slope']:
+    ce_mask_5m &= (df_5m['SUPERT_slope'] > 0)
+    pe_mask_5m &= (df_5m['SUPERT_slope'] < 0)
+
+if BEST_PARAMS['use_macd']:
+    ce_mask_5m &= (df_5m['MACD'] > df_5m['MACD_signal'])
+    pe_mask_5m &= (df_5m['MACD'] < df_5m['MACD_signal'])
+
+ce_mask_5m &= (df_5m['BB_width'] < BEST_PARAMS['bb_max_width'])
+pe_mask_5m &= (df_5m['BB_width'] < BEST_PARAMS['bb_max_width'])
+
+# Map 5-minute signal timestamps back to exact 1-minute array indices
+ce_signal_timestamps = df_5m.index[ce_mask_5m]
+pe_signal_timestamps = df_5m.index[pe_mask_5m]
+
+ce_indices = df.index.get_indexer(ce_signal_timestamps)
+pe_indices = df.index.get_indexer(pe_signal_timestamps)
+
+ce_indices = ce_indices[ce_indices != -1]
+pe_indices = pe_indices[pe_indices != -1]
+
+# Set targets/stops based on execution fills
+ce_sl, ce_tg, ce_trail = [], [], []
+if len(ce_indices) > 0:
+    ce_atrs = df['ce_ATR'].values[ce_indices]
+    ce_fills = CE_NEXT_OPEN[ce_indices] + SLIPPAGE
+    ce_sl = ce_fills - (ce_atrs * BEST_PARAMS['sl_atr'])
+    ce_tg = ce_fills + (ce_atrs * BEST_PARAMS['target_atr'])
+    ce_trail = ce_atrs * BEST_PARAMS['trailing_sl_atr'] 
+
+pe_sl, pe_tg, pe_trail = [], [], []
+if len(pe_indices) > 0:
+    pe_atrs = df['pe_ATR'].values[pe_indices]
+    pe_fills = PE_NEXT_OPEN[pe_indices] + SLIPPAGE
+    pe_sl = pe_fills - (pe_atrs * BEST_PARAMS['sl_atr'])
+    pe_tg = pe_fills + (pe_atrs * BEST_PARAMS['target_atr'])
+    pe_trail = pe_atrs * BEST_PARAMS['trailing_sl_atr']
+
+# =====================================================================
+# 3. UNIFIED CHRONOLOGICAL EVALUATOR (1-MIN STEPPING)
 # =====================================================================
 def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail_arr, pe_sl_arr, pe_tg_arr, pe_trail_arr, max_daily_trades, max_daily_profit):
     stats = {
@@ -94,14 +148,12 @@ def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce
     }
     daily_logs = {}
 
-    # 1. Bundle all signals together (idx, type(0=CE, 1=PE), sl, target, trailing)
     signals = []
     for i, idx in enumerate(ce_indices):
         signals.append((idx, 0, ce_sl_arr[i], ce_tg_arr[i], ce_trail_arr[i]))
     for i, idx in enumerate(pe_indices):
         signals.append((idx, 1, pe_sl_arr[i], pe_tg_arr[i], pe_trail_arr[i]))
 
-    # 2. Sort chronologically to permanently fix Time Leaks
     signals.sort(key=lambda x: x[0])
 
     last_exit_idx = -1
@@ -112,7 +164,6 @@ def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce
     for sig in signals:
         start_idx, opt_type, sl, tg, trail_dist = sig
         
-        # Position Lock: Prevents overlapping CE and PE trades
         if start_idx <= last_exit_idx:
             continue
         
@@ -127,21 +178,15 @@ def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce
         if trade_date_str not in daily_logs:
             daily_logs[trade_date_str] = {'trades': 0, 'net_pnl': 0.0}
             
-        # Unified Daily limit enforcement
-        if trades_today >= max_daily_trades:
-            continue
-        if profit_today >= max_daily_profit:
+        if trades_today >= max_daily_trades or profit_today >= max_daily_profit:
             continue
             
-        # Select appropriate arrays based on option type
-        if opt_type == 0:
-            prices_high, prices_low, prices_close = CE_HIGH, CE_LOW, CE_CLOSE
-            prices_next_open = CE_NEXT_OPEN
-        else:
-            prices_high, prices_low, prices_close = PE_HIGH, PE_LOW, PE_CLOSE
-            prices_next_open = PE_NEXT_OPEN
+        prices_high = CE_HIGH if opt_type == 0 else PE_HIGH
+        prices_low = CE_LOW if opt_type == 0 else PE_LOW
+        prices_close = CE_CLOSE if opt_type == 0 else PE_CLOSE
+        prices_next_open = CE_NEXT_OPEN if opt_type == 0 else PE_NEXT_OPEN
 
-        # LATENCY ENTRY: Enter exactly on the NEXT candle's open + spread penalty
+        # Enter on the immediate next 1-minute open + slippage
         entry_price = prices_next_open[start_idx] + SLIPPAGE
         highest_seen = entry_price
         current_lot_size = get_nifty_lot_size(trade_date)
@@ -149,18 +194,18 @@ def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce
         curr_idx = start_idx + 1
         exit_price = 0.0
         
+        # Step through 1-minute bars to manage target, SL, and trailing stoploss
         while curr_idx < len(DATES) and DATES[curr_idx] == trade_date:
             high = prices_high[curr_idx]
             low = prices_low[curr_idx]
             
-            # --- THE PESSIMISTIC FLIP (Safety First) ---
-            # Check Stoploss BEFORE Target to simulate the absolute worst-case scenario.
+            # Pessimistic Check: Stop loss evaluated first
             if low <= sl:
-                exit_price = sl - SLIPPAGE # Market Order: Pay Spread Penalty
+                exit_price = sl - SLIPPAGE
                 last_exit_idx = curr_idx
                 break
             if high >= tg:
-                exit_price = tg # Limit Order: Zero Slippage
+                exit_price = tg
                 last_exit_idx = curr_idx
                 break
                 
@@ -171,14 +216,13 @@ def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce
             curr_idx += 1
             
         if exit_price == 0.0:
-            exit_price = prices_close[curr_idx - 1] - SLIPPAGE # EOD Market Order
+            exit_price = prices_close[curr_idx - 1] - SLIPPAGE
             last_exit_idx = curr_idx - 1
             
         trade_gross_pnl = (exit_price - entry_price) * current_lot_size
         trade_charges = calculate_options_charges(entry_price, exit_price, current_lot_size)
         trade_net_pnl = trade_gross_pnl - trade_charges
         
-        # Live updates
         daily_logs[trade_date_str]['trades'] += 1
         daily_logs[trade_date_str]['net_pnl'] += trade_net_pnl
         
@@ -197,65 +241,13 @@ def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce
 
     return stats, daily_logs
 
-# =====================================================================
-# 5. RUN THE REALITY CHECK
-# =====================================================================
-print("\nApplying Unified Chronological Scalping rules to unseen data...")
-
-# Build Masks
-ce_mask = (df['RSI'] > BEST_PARAMS['rsi_min']) & (df['ADX'] > BEST_PARAMS['adx_min']) & (df['ADX'] < BEST_PARAMS['adx_max'])
-pe_mask = (df['RSI'] < (100 - BEST_PARAMS['rsi_min'])) & (df['ADX'] > BEST_PARAMS['adx_min']) & (df['ADX'] < BEST_PARAMS['adx_max'])
-
-if BEST_PARAMS['use_ema']:
-    ce_mask &= (SPOT_CLOSE > EMA_200)
-    pe_mask &= (SPOT_CLOSE < EMA_200)
-    
-if BEST_PARAMS['use_supertrend']:
-    ce_mask &= (SUPERTD == 1)
-    pe_mask &= (SUPERTD == -1)
-
-if BEST_PARAMS['req_active_slope']:
-    ce_mask &= (SUPERT_SLOPE > 0)
-    pe_mask &= (SUPERT_SLOPE < 0)
-
-if BEST_PARAMS['use_macd']:
-    ce_mask &= (MACD > MACD_SIG)
-    pe_mask &= (MACD < MACD_SIG)
-
-ce_mask &= (BB_WIDTH < BEST_PARAMS['bb_max_width'])
-pe_mask &= (BB_WIDTH < BEST_PARAMS['bb_max_width'])
-
-ce_indices = np.where(ce_mask)[0]
-pe_indices = np.where(pe_mask)[0]
-
-# --- EXTRACT ARRAYS AND PASS TO THE UNIFIED ENGINE IN ONE GO ---
-# Build Arrays - Using REAL fill price (Next Open + Slippage) to set targets/stops
-ce_sl, ce_tg, ce_trail = [], [], []
-if len(ce_indices) > 0:
-    ce_atrs = df['ce_ATR'].values[ce_indices]
-    ce_fills = CE_NEXT_OPEN[ce_indices] + SLIPPAGE
-    ce_sl = ce_fills - (ce_atrs * BEST_PARAMS['sl_atr'])
-    ce_tg = ce_fills + (ce_atrs * BEST_PARAMS['target_atr'])
-    ce_trail = ce_atrs * BEST_PARAMS['trailing_sl_atr'] 
-
-pe_sl, pe_tg, pe_trail = [], [], []
-if len(pe_indices) > 0:
-    pe_atrs = df['pe_ATR'].values[pe_indices]
-    pe_fills = PE_NEXT_OPEN[pe_indices] + SLIPPAGE
-    pe_sl = pe_fills - (pe_atrs * BEST_PARAMS['sl_atr'])
-    pe_tg = pe_fills + (pe_atrs * BEST_PARAMS['target_atr'])
-    pe_trail = pe_atrs * BEST_PARAMS['trailing_sl_atr'] 
-
 total_stats, daily_logs = evaluate_and_report_unified(
     ce_indices, pe_indices, ce_sl, ce_tg, ce_trail, pe_sl, pe_tg, pe_trail, 
     BEST_PARAMS['max_daily_trades'], BEST_PARAMS['max_daily_profit']
 )
 
-# =====================================================================
-# 6. THE REPORT
-# =====================================================================
 print("\n" + "="*50)
-print("🎯 OUT-OF-SAMPLE VALIDATION REPORT (UNIFIED SCALPING) 🎯")
+print("🎯 OUT-OF-SAMPLE VALIDATION REPORT (5M SIGNALS / 1M EXECUTION) 🎯")
 print("="*50)
 print(f"Total Trades Taken  : {total_stats['trades']}")
 
@@ -271,15 +263,3 @@ if total_stats['trades'] > 0:
 else:
     print("No trades triggered in the testing period.")
 print("="*50)
-
-if daily_logs:
-    print("\n" + "="*50)
-    print("📅 DAILY BREAKDOWN")
-    print("="*50)
-    print(f"{'Date':<15} | {'Trades':<8} | {'Net PnL'}")
-    print("-" * 50)
-    for d in sorted(daily_logs.keys()):
-        day_stats = daily_logs[d]
-        pnl_str = f"₹{day_stats['net_pnl']:,.2f}"
-        print(f"{d:<15} | {day_stats['trades']:<8} | {pnl_str}")
-    print("="*50)

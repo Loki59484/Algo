@@ -10,14 +10,25 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from core.methods import ZMQErrorLogger, start_heartbeat
+from core.methods import ZMQErrorLogger, start_heartbeat, TelegramErrorLogger, TELEGRAM_TOKEN, CHAT_ID
 from core.upstox_methods import UpstoxClient, logger
 from planner import Planner
 from tools.charges_calculator import charges_calculator
+
 # Configure ZMQ Error Logging
 zmq_handler = ZMQErrorLogger(component_name="Risk Monitor", port=5567)
 zmq_handler.setFormatter(logging.Formatter('%(message)s'))
 logging.getLogger().addHandler(zmq_handler)
+telegram_handler = TelegramErrorLogger(bot_id=TELEGRAM_TOKEN,chat_id=CHAT_ID)
+telegram_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+log_queue = logging.handlers.queue.Queue(-1)
+queue_handler = logging.handlers.QueueHandler(log_queue)
+listener = logging.handlers.QueueListener(log_queue, telegram_handler)
+
+
+
+logging.getLogger().addHandler(telegram_handler)
+
 
 
 class RiskManager:
@@ -42,7 +53,14 @@ class RiskManager:
     def initialize_thresholds(self) -> None:
         """Syncs with the Planner to establish today's dynamic profit and loss limits."""
         args = self.planner.setup_cli()
-        plan_df = self.planner.create(args)
+        
+        plan_df = self.planner.create(
+        target=args.target, 
+        starting=args.starting,
+        multiplier=args.multiplier, 
+        force=args.force,
+        save_state=False)
+
         today_str = dt.datetime.today().date().strftime("%Y-%m-%d")
 
         # 1. Check if today is a valid trading day
