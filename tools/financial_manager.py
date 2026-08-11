@@ -425,9 +425,9 @@ class CFOTracker(App):
             target_date_text = final_date_obj.strftime('%d %B %Y')
 
         if self.planner.surplus > 0:
-            surplus_text = f"[bold green]+₹{self.planner.surplus:,.2f} (Ahead of plan 🚀)[/bold green]"
+            surplus_text = f"[bold green]+₹{self.planner.surplus:,.2f} (Ahead of plan 🚀 )[/bold green]"
         elif self.planner.surplus < 0:
-            surplus_text = f"[bold red]-₹{abs(self.planner.surplus):,.2f} (Behind plan ⚠️)[/bold red]"
+            surplus_text = f"[bold red]-₹{abs(self.planner.surplus):,.2f} (Behind plan ⚠️ )[/bold red]"
         else:
             surplus_text = "[bold]₹0.00 (Exactly on track)[/bold]"
 
