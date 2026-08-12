@@ -10,7 +10,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from core.methods import ZMQErrorLogger, start_heartbeat, TelegramErrorLogger, TELEGRAM_TOKEN, CHAT_ID
+from core.methods import ZMQErrorLogger, start_heartbeat, TelegramHandler, TELEGRAM_TOKEN, CHAT_ID
 from core.upstox_methods import UpstoxClient, logger
 from planner import Planner
 from tools.charges_calculator import charges_calculator
@@ -19,7 +19,7 @@ from tools.charges_calculator import charges_calculator
 zmq_handler = ZMQErrorLogger(component_name="Risk Monitor", port=5567)
 zmq_handler.setFormatter(logging.Formatter('%(message)s'))
 logging.getLogger().addHandler(zmq_handler)
-telegram_handler = TelegramErrorLogger(bot_id=TELEGRAM_TOKEN,chat_id=CHAT_ID)
+telegram_handler = TelegramHandler(bot_id=TELEGRAM_TOKEN,chat_id=CHAT_ID)
 telegram_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
 log_queue = logging.handlers.queue.Queue(-1)
 queue_handler = logging.handlers.QueueHandler(log_queue)
@@ -39,7 +39,6 @@ class RiskManager:
     TRADE_PROFIT_TARGET = 3000.0
     DEFAULT_MAX_LOSS = -5000.0
     TICK_SIZE = 0.05
-    SLEEP_AFTER_KILL = 12 * 60 * 60  # 12 hours in seconds
 
     def __init__(self):
         self.ustox = UpstoxClient()
@@ -173,7 +172,7 @@ class RiskManager:
         elif current_pnl <= self.max_loss_threshold:
             await self._trigger_kill_switch(current_pnl, "MAX LOSS REACHED - EMERGENCY")
 
-    async def _trigger_kill_switch(self, pnl: float, reason: str) -> None:
+async def _trigger_kill_switch(self, pnl: float, reason: str) -> None:
         """Cancels orders, exits positions, disables trading, and sleeps."""
         logger.warning(f"🚨 {reason} (₹{pnl:,.2f})")
         
@@ -209,9 +208,9 @@ class RiskManager:
         except Exception as e:
             logger.error(f"Fatal error activating kill switch: {e}")
 
-        # 5. Sleep the daemon
-        logger.info(f"Risk Engine halted. Sleeping for {self.SLEEP_AFTER_KILL / 3600} hours...")
-        await asyncio.sleep(self.SLEEP_AFTER_KILL)
+        # 5. Exit the daemon
+        logger.info("Risk Engine halted for the day. Exiting process.")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
