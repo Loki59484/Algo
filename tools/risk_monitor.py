@@ -4,7 +4,7 @@ import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict
-
+from logging.handlers import QueueHandler, QueueListener
 # Setup paths based on existing structure
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -19,15 +19,15 @@ from tools.charges_calculator import charges_calculator
 zmq_handler = ZMQErrorLogger(component_name="Risk Monitor", port=5567)
 zmq_handler.setFormatter(logging.Formatter('%(message)s'))
 logging.getLogger().addHandler(zmq_handler)
-telegram_handler = TelegramHandler(bot_id=TELEGRAM_TOKEN,chat_id=CHAT_ID)
+telegram_handler = TelegramHandler(bot_token=TELEGRAM_TOKEN,chat_id=CHAT_ID)
 telegram_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-log_queue = logging.handlers.queue.Queue(-1)
-queue_handler = logging.handlers.QueueHandler(log_queue)
-listener = logging.handlers.QueueListener(log_queue, telegram_handler)
-
-
-
-logging.getLogger().addHandler(telegram_handler)
+#log_queue = logging ueue(-1)
+#queue_handler = logging.handlers.QueueHandler(log_queue)
+#listener = logging.handlers.QueueListener(log_queue, telegram_handler)
+#
+#
+#
+#logging.getLogger().addHandler(telegram_handler)
 
 
 
