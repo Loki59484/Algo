@@ -31,12 +31,12 @@ DATES = global_df.index.date
 CE_HIGH = global_df['ce_high'].values
 CE_LOW = global_df['ce_low'].values
 CE_CLOSE = global_df['ce_close'].values
-CE_NEXT_OPEN = global_df['ce_next_open'].values
+CE_ATR = global_df['ce_ATR'].values
 
 PE_HIGH = global_df['pe_high'].values
 PE_LOW = global_df['pe_low'].values
 PE_CLOSE = global_df['pe_close'].values
-PE_NEXT_OPEN = global_df['pe_next_open'].values
+PE_ATR = global_df['pe_ATR'].values
 
 # Pre-resample 5-minute dataset for ultra-fast signal generation
 df_5m = global_df.resample('5min', origin='start_day').agg({
@@ -53,7 +53,7 @@ df_5m = global_df.resample('5min', origin='start_day').agg({
     'pe_ATR': 'last',
 }).dropna()
 
-SLIPPAGE = 0.25
+SLIPPAGE = 0.25 # Only applied on market exits (SL)
 
 def get_nifty_lot_size(trade_date):
     if trade_date >= datetime.date(2026, 1, 1): return 65
@@ -72,15 +72,9 @@ def calculate_options_charges(buy_price, sell_price, qty):
     gst = (brokerage + txn_charge + sebi_charge) * 0.18
     return brokerage + stt + txn_charge + sebi_charge + stamp_duty + gst
 
-def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail_arr, pe_sl_arr, pe_tg_arr, pe_trail_arr, max_daily_trades, max_daily_profit):
+def fast_evaluate_unified(ce_indices, pe_indices, sl_atr, target_atr, trailing_sl_atr, max_daily_trades, max_daily_profit):
     total_pnl = 0.0
-
-    signals = []
-    for i, idx in enumerate(ce_indices):
-        signals.append((idx, 0, ce_sl_arr[i], ce_tg_arr[i], ce_trail_arr[i]))
-    for i, idx in enumerate(pe_indices):
-        signals.append((idx, 1, pe_sl_arr[i], pe_tg_arr[i], pe_trail_arr[i]))
-
+    signals = [(idx, 0) for idx in ce_indices] + [(idx, 1) for idx in pe_indices]
     signals.sort(key=lambda x: x[0])
 
     last_exit_idx = -1
@@ -89,7 +83,7 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
     profit_today = 0.0
 
     for sig in signals:
-        start_idx, opt_type, sl, tg, trail_dist = sig
+        start_idx, opt_type = sig
 
         if start_idx <= last_exit_idx:
             continue
@@ -107,27 +101,50 @@ def fast_evaluate_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail
         prices_high = CE_HIGH if opt_type == 0 else PE_HIGH
         prices_low = CE_LOW if opt_type == 0 else PE_LOW
         prices_close = CE_CLOSE if opt_type == 0 else PE_CLOSE
-        prices_next_open = CE_NEXT_OPEN if opt_type == 0 else PE_NEXT_OPEN
+        atrs = CE_ATR if opt_type == 0 else PE_ATR
 
-        entry_price = prices_next_open[start_idx] + SLIPPAGE
+        # --- LIMIT ORDER LOGIC ---
+        limit_price = prices_close[start_idx] # Limit is the 5-min close price
+        fill_price = 0.0
+        curr_idx = start_idx
+        
+        # Give the market 3 minutes to fill the limit order
+        for offset in range(1, 4): 
+            check_idx = start_idx + offset
+            if check_idx < len(DATES) and DATES[check_idx] == trade_date:
+                if prices_low[check_idx] <= limit_price:
+                    fill_price = limit_price
+                    curr_idx = check_idx
+                    break
+                    
+        # If order wasn't filled within the 3-minute window, cancel trade
+        if fill_price == 0.0:
+            continue
+            
+        entry_price = fill_price
         highest_seen = entry_price
         current_lot_size = get_nifty_lot_size(trade_date)
+        
+        # Calculate dynamic targets based on fill
+        current_atr = atrs[start_idx]
+        sl = entry_price - (current_atr * sl_atr)
+        tg = entry_price + (current_atr * target_atr)
+        trail_dist = current_atr * trailing_sl_atr
 
-        curr_idx = start_idx + 1
         exit_price = 0.0
 
-        # Intraday 1-minute step-by-step resolution
+        # --- 1-MINUTE STEP-THROUGH RESOLUTION ---
         while curr_idx < len(DATES) and DATES[curr_idx] == trade_date:
             high = prices_high[curr_idx]
             low = prices_low[curr_idx]
 
             # Pessimistic Check: Stop loss evaluated first
             if low <= sl:
-                exit_price = sl - SLIPPAGE
+                exit_price = sl - SLIPPAGE # Pay slippage on market exit
                 last_exit_idx = curr_idx
                 break
             if high >= tg:
-                exit_price = tg 
+                exit_price = tg # Limit targets have no slippage
                 last_exit_idx = curr_idx
                 break
 
@@ -202,24 +219,8 @@ def objective(trial):
     if len(ce_indices) == 0 and len(pe_indices) == 0:
         return -99999.0
 
-    ce_sl, ce_tg, ce_trail = [], [], []
-    if len(ce_indices) > 0:
-        ce_atrs = global_df['ce_ATR'].values[ce_indices]
-        ce_fills = CE_NEXT_OPEN[ce_indices] + SLIPPAGE
-        ce_sl = ce_fills - (ce_atrs * sl_atr)
-        ce_tg = ce_fills + (ce_atrs * target_atr)
-        ce_trail = ce_atrs * trailing_sl_atr
-
-    pe_sl, pe_tg, pe_trail = [], [], []
-    if len(pe_indices) > 0:
-        pe_atrs = global_df['pe_ATR'].values[pe_indices]
-        pe_fills = PE_NEXT_OPEN[pe_indices] + SLIPPAGE
-        pe_sl = pe_fills - (pe_atrs * sl_atr)
-        pe_tg = pe_fills + (pe_atrs * target_atr)
-        pe_trail = pe_atrs * trailing_sl_atr
-
     net_profit = fast_evaluate_unified(
-        ce_indices, pe_indices, ce_sl, ce_tg, ce_trail, pe_sl, pe_tg, pe_trail, 
+        ce_indices, pe_indices, sl_atr, target_atr, trailing_sl_atr, 
         max_daily_trades, max_daily_profit
     )
     
@@ -241,7 +242,7 @@ if __name__ == "__main__":
     try:
         study.optimize(
             objective, 
-            n_trials=1500, 
+            n_trials=3000, 
             n_jobs=24, 
             show_progress_bar=True
         )

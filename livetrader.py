@@ -28,7 +28,6 @@ from core.methods import setup_cli, start_heartbeat, ZMQErrorLogger, calculate_t
 from core import anatomy as ana
 from ui import tui
 
-
 zmq_handler = ZMQErrorLogger(component_name="Live Trader", port=5568)
 zmq_handler.setFormatter(logging.Formatter('%(message)s'))
 
@@ -44,39 +43,28 @@ print(
 )
 
 # =====================================================================
-# THE GEAR BOX: OPTUNA VALIDATED PARAMETERS (5-MIN TIMEFRAME)
+# THE GEAR BOX: UNIFIED MTF PARAMETERS (5-MIN TIMEFRAME)
 # =====================================================================
-SNIPE_BEST_PARAMS = {
-    "rsi_min": 55,
-    "adx_min": 35,
-    "use_ema": True,
-    "use_supertrend": False,
-    "req_active_slope": True,
-    "use_macd": False,
-    "bb_max_width": 0.025,
-    "sl_atr": 1.5,
-    "target_atr": 6.0,
-    "trailing_sl_atr": 1.5,
-}
-SCALP_BEST_PARAMS = {
+BEST_PARAMS = {
     "rsi_min": 60,
     "adx_min": 25,
+    "adx_max": 75,
     "use_ema": True,
     "use_supertrend": False,
     "req_active_slope": False,
     "use_macd": False,
     "bb_max_width": 0.035,
     "sl_atr": 1.5,
-    "target_atr": 3.0,
-    "trailing_sl_atr": 0.8,
-    "max_daily_trades": 5,
-    "max_daily_profit": 15000.0,
+    "target_atr": 5.0,
+    "trailing_sl_atr": 1.2,
+    "max_daily_trades": 3, # Handled by your Risk Monitor kill-switch safely
+    "max_daily_profit": 12000, 
 }
 
 # =====================================================================
 # MARKET FRICTION & LATENCY VARIABLES
 # =====================================================================
-SLIPPAGE = 0.25  # Slippage per market order fill
+SLIPPAGE = 0.25  # Slippage per market order fill (applied to SL/EOD only)
 
 # =====================================================================
 # HELPER FUNCTIONS & MULTI-TIMEFRAME RESAMPLER
@@ -96,7 +84,6 @@ def resample_to_5m(df_1m: pd.DataFrame) -> pd.DataFrame:
     
     return resampled
 
-
 def place_buy_order(
     opt_leg: Instrument,
     opt_row: pd.Series,
@@ -112,14 +99,15 @@ def place_buy_order(
         if atr == 0:
             return -1
 
-        close_price = opt_row.get("close", 0)
-        buy_price = close_price + SLIPPAGE
+        # LIMIT ORDER ASSIGNMENT - Avoid slippage directly
+        limit_price = opt_row.get("close", 0)
 
-        qty = trader.calculate_units(close=buy_price, lot_size=opt_leg.lot_size)
+        qty = trader.calculate_units(close=limit_price, lot_size=opt_leg.lot_size)
         if qty == 0:
             return -1
 
-        status = trader.broker.buy_order(key=opt_leg.key, price=buy_price, qty=qty)
+        # Placing a limit order via broker
+        status = trader.broker.buy_order(key=opt_leg.key, price=limit_price, qty=qty, order_type="LIMIT")
         
         if status is None or status.get("status") != "success":
             logger.error(f"Order failed or rejected by API: {status}")
@@ -131,12 +119,12 @@ def place_buy_order(
         pos = SimpleNamespace(instrument_key=opt_leg.key)
         
         bucket.open_position = pos
-        bucket.open_position.target = buy_price + (active_params["target_atr"] * atr)
-        bucket.open_position.stoploss = buy_price - (active_params["sl_atr"] * atr)
+        bucket.open_position.target = limit_price + (active_params["target_atr"] * atr)
+        bucket.open_position.stoploss = limit_price - (active_params["sl_atr"] * atr)
         bucket.open_position.trail_dist = (
             active_params.get("trailing_sl_atr", 1.5) * atr
         )
-        bucket.open_position.highest_seen = buy_price
+        bucket.open_position.highest_seen = limit_price
 
         trader.portfolio.report.append(
             Trade(
@@ -144,13 +132,13 @@ def place_buy_order(
                 instrument_key=opt_leg.key,
                 buy_timestamp=timestamp,
                 side=opt_leg.type,
-                buy_price=buy_price,
+                buy_price=limit_price,
                 buy_qty=qty,
                 buy_conditions=spot_row.to_dict(),
             )
         )
         logger.info(
-            f"[{gear_name}] MARKET ORDER FILLED: Buy {opt_leg.type} @ ₹{buy_price:.2f} (Base LTP: ₹{close_price:.2f}) # Qty {qty}"
+            f"[{gear_name}] LIMIT ORDER PLACED/FILLED: Buy {opt_leg.type} @ ₹{limit_price:.2f} # Qty {qty}"
         )
         return 1
     except Exception as e:
@@ -295,7 +283,9 @@ async def execute_live(
         }
         await ui_socket.send_string(json.dumps(payload))
 
-    ACTIVE_PARAMS, gear_name = _change_gears(trader, timestamp)
+    # --- SIMPLIFIED UNIFIED GEAR ---
+    ACTIVE_PARAMS = BEST_PARAMS
+    gear_name = "MTF_ENGINE"
 
     # 1. Intra-Candle Open Position Management (Evaluated every 1-Minute Candle)
     if bucket.open_position is not None:
@@ -311,7 +301,6 @@ async def execute_live(
             trader,
         )
         return
-
     # 2. Strategy Signal Generation (Evaluated ONLY at 5-Minute Candle Closures)
     curr_time = timestamp.time()
     if curr_time > dt.time(15, 10):
@@ -334,10 +323,10 @@ async def execute_live(
                     bucket.last_signal_5m = current_5m_boundary
                     
                     if ce_cond:
-                        logger.info(f"[{gear_name}] 5M SIGNAL FIRED (CE)! Executing on 1m Open...")
+                        logger.info(f"[{gear_name}] 5M SIGNAL FIRED (CE)! Executing Limit Order on Option Close...")
                         place_buy_order(call_option, ce_row, bucket, trader, ACTIVE_PARAMS, spot_closed_5m, gear_name, timestamp)
                     elif pe_cond:
-                        logger.info(f"[{gear_name}] 5M SIGNAL FIRED (PE)! Executing on 1m Open...")
+                        logger.info(f"[{gear_name}] 5M SIGNAL FIRED (PE)! Executing Limit Order on Option Close...")
                         place_buy_order(put_option, pe_row, bucket, trader, ACTIVE_PARAMS, spot_closed_5m, gear_name, timestamp)
 
 
@@ -380,6 +369,7 @@ def _manage_position_live(
             last_trade = trader.portfolio.report[-1]
             qty_to_sell = getattr(last_trade, "buy_qty", getattr(last_trade, "Buy_qty", 0))
 
+            # Limit targets exit seamlessly, stoplosses/EOD exit at market paying slippage
             exit_price = (pos.stoploss - SLIPPAGE) if stoploss_hit else (pos.target if target_hit else close - SLIPPAGE)
 
             status = trader.broker.sell_order(key=active_opt.key, qty=qty_to_sell, price=exit_price)

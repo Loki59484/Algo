@@ -4,7 +4,7 @@ import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict
-from logging.handlers import QueueHandler, QueueListener
+
 # Setup paths based on existing structure
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -19,26 +19,17 @@ from tools.charges_calculator import charges_calculator
 zmq_handler = ZMQErrorLogger(component_name="Risk Monitor", port=5567)
 zmq_handler.setFormatter(logging.Formatter('%(message)s'))
 logging.getLogger().addHandler(zmq_handler)
-telegram_handler = TelegramHandler(bot_token=TELEGRAM_TOKEN,chat_id=CHAT_ID)
+
+telegram_handler = TelegramHandler(bot_token=TELEGRAM_TOKEN, chat_id=CHAT_ID)
 telegram_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-#log_queue = logging ueue(-1)
-#queue_handler = logging.handlers.QueueHandler(log_queue)
-#listener = logging.handlers.QueueListener(log_queue, telegram_handler)
-#
-#
-#
-#logging.getLogger().addHandler(telegram_handler)
-
-
+logging.getLogger().addHandler(telegram_handler)
 
 class RiskManager:
-    """Monitors live trades, places automated limit targets, and enforces kill switches."""
+    """Monitors live portfolio PnL and enforces account-level kill switches."""
 
     # Configurable Constants
     COST_BUFFER = 5000.0
-    TRADE_PROFIT_TARGET = 3000.0
     DEFAULT_MAX_LOSS = -5000.0
-    TICK_SIZE = 0.05
 
     def __init__(self):
         self.ustox = UpstoxClient()
@@ -53,17 +44,19 @@ class RiskManager:
         """Syncs with the Planner to establish today's dynamic profit and loss limits."""
         args = self.planner.setup_cli()
         
+        # UPDATE: Extract and pass explicit kwargs based on the new Planner.create() signature
         plan_df = self.planner.create(
-        target=args.target, 
-        starting=args.starting,
-        multiplier=args.multiplier, 
-        force=args.force,
-        save_state=False)
+            target=args.target, 
+            starting=args.starting,
+            multiplier=args.multiplier, 
+            force=args.force,
+            save_state=False  # The monitor only reads the state; it shouldn't overwrite the JSON
+        )
 
         today_str = dt.datetime.today().date().strftime("%Y-%m-%d")
 
         # 1. Check if today is a valid trading day
-        if today_str not in plan_df["Date"].values:
+        if plan_df is not None and not plan_df.empty and today_str not in plan_df["Date"].values:
             logger.warning(f"No trading scheduled for {today_str}. Market likely closed.")
             logger.info("Exiting Risk Monitor.")
             sys.exit(0)
@@ -74,10 +67,13 @@ class RiskManager:
         self.target_threshold = self.day_target + charges
 
         # 3. Establish Max Loss (Based on previous day's profit)
-        today_idx = plan_df.index[plan_df["Date"] == today_str].tolist()[0]
-        if today_idx > 0:
-            prev_day_profit = float(plan_df.iloc[today_idx - 1]["Profit"])
-            self.max_loss_threshold = -abs(prev_day_profit) 
+        if plan_df is not None and not plan_df.empty:
+            today_idx_list = plan_df.index[plan_df["Date"] == today_str].tolist()
+            if today_idx_list and today_idx_list[0] > 0:
+                prev_day_profit = float(plan_df.iloc[today_idx_list[0] - 1]["Profit"])
+                self.max_loss_threshold = -abs(prev_day_profit) 
+            else:
+                self.max_loss_threshold = self.DEFAULT_MAX_LOSS
         else:
             self.max_loss_threshold = self.DEFAULT_MAX_LOSS 
 
@@ -103,67 +99,37 @@ class RiskManager:
             except Exception as e:
                 logger.exception(f"Stream encountered error: {e}. Reconnecting in 5s...")
                 ws_task.cancel()
-                await asyncio.sleep(5) # Safely loop back to the top to reconnect
+                await asyncio.sleep(5) 
 
     async def _process_stream(self, queue: asyncio.Queue) -> None:
         """Consumes updates from the WebSocket queue."""
-
         while True:
-            logger.info("Awaiting update...")
             update: Dict[str, Any] = await queue.get()
             
             status = update.get("status")
             txn_type = update.get("transaction_type")
             
-            if status == "complete" and txn_type == "BUY":
-                self._process_buy_order(update)
-                
-            elif status == "complete" and txn_type == "SELL":
+            # ONLY evaluate PnL when a SELL order completes (position closed by livetrader)
+            if status == "complete" and txn_type == "SELL":
                 await self._evaluate_pnl_and_kill()
-                
-            else:
-                logger.info(f"Update received for {update.get('trading_symbol', 'Unknown')} | status: {status}")
-
-    def _process_buy_order(self, update: Dict[str, Any]) -> None:
-        """Calculates and places the corresponding limit SELL order for a filled BUY."""
-        filled_qty = int(update.get("filled_quantity", 0))
-        avg_price = float(update.get("average_price", 0.0))
-        instrument = update.get("instrument_token")
-        product_type = update.get("product", "D")
-
-        if filled_qty <= 0 or avg_price <= 0:
-            return
-
-        # Calculate the exact Limit Price based on required points per quantity
-        required_points = self.TRADE_PROFIT_TARGET / filled_qty
-        raw_target_price = avg_price + required_points
-
-        # Round to the nearest valid tick size (0.05)
-        target_price = round(raw_target_price / self.TICK_SIZE) * self.TICK_SIZE
-        
-        logger.info(
-            f"BUY filled for {update.get('trading_symbol')} at ₹{avg_price:,.2f}. "
-            f"Sending SELL limit order at ₹{target_price:,.2f} to hit ₹{self.TRADE_PROFIT_TARGET} target."
-        )
-
-        self.ustox.place_order(
-            instrument_token=instrument,
-            transaction_type="SELL",
-            quantity=filled_qty,
-            order_type="LIMIT",
-            price=target_price,
-            product="I" if product_type == "SCP" else product_type,
-        )
+            elif status == "complete":
+                logger.info(f"Trade filled for {update.get('trading_symbol', 'Unknown')} | side: {txn_type}")
 
     async def _evaluate_pnl_and_kill(self) -> None:
         """Evaluates daily realized PnL and triggers kill switches if thresholds are breached."""
         # Calculate current net realized PnL
         positions = self.ustox.get_positions()
+        
+        # Guard against None if API fails
+        if not positions:
+            return
+            
         current_pnl = sum(float(item.get("realised", 0.0)) for item in positions)
         charges = charges_calculator()
-        self.target_threshold = self.day_target+charges
+        self.target_threshold = self.day_target + charges
         self.max_loss_threshold = self.DEFAULT_MAX_LOSS - charges
-        logger.info(f"Current Realized PnL: ₹{current_pnl:,.2f} | Current Target : ₹{self.target_threshold:,.2f} | Max Loss Threshold ₹{self.max_loss_threshold:,.2f}")
+        
+        logger.info(f"Current Realized PnL: ₹{current_pnl:,.2f} | Target: ₹{self.target_threshold:,.2f} | Max Loss: ₹{self.max_loss_threshold:,.2f}")
 
         # Check thresholds
         if current_pnl >= self.target_threshold:
@@ -172,7 +138,7 @@ class RiskManager:
         elif current_pnl <= self.max_loss_threshold:
             await self._trigger_kill_switch(current_pnl, "MAX LOSS REACHED - EMERGENCY")
 
-async def _trigger_kill_switch(self, pnl: float, reason: str) -> None:
+    async def _trigger_kill_switch(self, pnl: float, reason: str) -> None:
         """Cancels orders, exits positions, disables trading, and sleeps."""
         logger.warning(f"🚨 {reason} (₹{pnl:,.2f})")
         
@@ -202,6 +168,7 @@ async def _trigger_kill_switch(self, pnl: float, reason: str) -> None:
             # Verify success
             if isinstance(resp, dict) and resp.get("status") == "success":
                 logger.info("Kill switch confirmed successful by broker.")
+                # tg_bot.send_alert(f"✅ Segment Kill Switch Activated! Final PnL: ₹{pnl:,.2f}")
             else:
                 logger.error(f"Kill switch may have failed! Broker response: {resp}")
                 
@@ -211,7 +178,6 @@ async def _trigger_kill_switch(self, pnl: float, reason: str) -> None:
         # 5. Exit the daemon
         logger.info("Risk Engine halted for the day. Exiting process.")
         sys.exit(0)
-
 
 if __name__ == "__main__":
     try:

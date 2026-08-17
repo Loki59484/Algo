@@ -14,7 +14,7 @@ from ml.database_builder import TESTING_DATA_PATH
 ustox = UpstoxClient()
 
 # =====================================================================
-# 1. OPTUNA VALIDATED PARAMETERS (5-MIN TIMEFRAME)
+# 1. OPTUNA VALIDATED PARAMETERS & REALITY CONSTRAINTS
 # =====================================================================
 BEST_PARAMS = {
     "rsi_min": 60,
@@ -32,6 +32,12 @@ BEST_PARAMS = {
     "max_daily_profit": 12000,
 }
 
+# --- REALITY CHECK CONSTRAINTS ---
+INITIAL_CAPITAL = 70000.0
+CAPITAL_ALLOCATION_PCT = 0.50  # Max 40% of running equity per trade
+MAX_LOTS_CAP = 3              # Prevent sweeping the order book (liquidity limit)
+FIXED_1_LOT_BASELINE = False    # Set to True to evaluate raw strategy edge, False to compound
+
 if not TESTING_DATA_PATH.exists():
     raise FileNotFoundError(f"Could not find {TESTING_DATA_PATH}. Did you run database_builder.py?")
 
@@ -44,14 +50,14 @@ DATES = df.index.date
 CE_HIGH = df['ce_high'].values
 CE_LOW = df['ce_low'].values
 CE_CLOSE = df['ce_close'].values
-CE_NEXT_OPEN = df['ce_next_open'].values
+CE_ATR = df['ce_ATR'].values
 
 PE_HIGH = df['pe_high'].values
 PE_LOW = df['pe_low'].values
 PE_CLOSE = df['pe_close'].values
-PE_NEXT_OPEN = df['pe_next_open'].values
+PE_ATR = df['pe_ATR'].values
 
-SLIPPAGE = 0.25  # Constant Spread slippage on market orders
+SLIPPAGE = 0.25  # Spread slippage (will be multiplied by quantity)
 
 def get_nifty_lot_size(trade_date):
     if trade_date >= pd.Timestamp("2026-01-01").date(): return 65
@@ -95,15 +101,12 @@ pe_mask_5m = (df_5m['RSI'] < (100 - BEST_PARAMS['rsi_min'])) & (df_5m['ADX'] > B
 if BEST_PARAMS['use_ema']:
     ce_mask_5m &= (df_5m['close'] > df_5m['EMA_200'])
     pe_mask_5m &= (df_5m['close'] < df_5m['EMA_200'])
-
 if BEST_PARAMS['use_supertrend']:
     ce_mask_5m &= (df_5m['SUPERTd'] == 1)
     pe_mask_5m &= (df_5m['SUPERTd'] == -1)
-
 if BEST_PARAMS['req_active_slope']:
     ce_mask_5m &= (df_5m['SUPERT_slope'] > 0)
     pe_mask_5m &= (df_5m['SUPERT_slope'] < 0)
-
 if BEST_PARAMS['use_macd']:
     ce_mask_5m &= (df_5m['MACD'] > df_5m['MACD_signal'])
     pe_mask_5m &= (df_5m['MACD'] < df_5m['MACD_signal'])
@@ -121,48 +124,35 @@ pe_indices = df.index.get_indexer(pe_signal_timestamps)
 ce_indices = ce_indices[ce_indices != -1]
 pe_indices = pe_indices[pe_indices != -1]
 
-# Set targets/stops based on execution fills
-ce_sl, ce_tg, ce_trail = [], [], []
-if len(ce_indices) > 0:
-    ce_atrs = df['ce_ATR'].values[ce_indices]
-    ce_fills = CE_NEXT_OPEN[ce_indices] + SLIPPAGE
-    ce_sl = ce_fills - (ce_atrs * BEST_PARAMS['sl_atr'])
-    ce_tg = ce_fills + (ce_atrs * BEST_PARAMS['target_atr'])
-    ce_trail = ce_atrs * BEST_PARAMS['trailing_sl_atr'] 
-
-pe_sl, pe_tg, pe_trail = [], [], []
-if len(pe_indices) > 0:
-    pe_atrs = df['pe_ATR'].values[pe_indices]
-    pe_fills = PE_NEXT_OPEN[pe_indices] + SLIPPAGE
-    pe_sl = pe_fills - (pe_atrs * BEST_PARAMS['sl_atr'])
-    pe_tg = pe_fills + (pe_atrs * BEST_PARAMS['target_atr'])
-    pe_trail = pe_atrs * BEST_PARAMS['trailing_sl_atr']
-
 # =====================================================================
-# 3. UNIFIED CHRONOLOGICAL EVALUATOR (1-MIN STEPPING)
+# 3. UNIFIED CHRONOLOGICAL EVALUATOR (CAPITAL-AWARE)
 # =====================================================================
-def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce_trail_arr, pe_sl_arr, pe_tg_arr, pe_trail_arr, max_daily_trades, max_daily_profit):
+def evaluate_and_report_unified(
+    ce_indices, pe_indices, sl_atr, target_atr, trailing_sl_atr, 
+    max_daily_trades, max_daily_profit,
+    initial_capital=70000.0,
+    capital_allocation_pct=0.40,
+    max_lots=3,
+    fixed_1_lot=False
+):
     stats = {
         'net_pnl': 0.0, 'gross_pnl': 0.0, 'total_charges': 0.0,
-        'trades': 0, 'wins': 0, 'losses': 0
+        'trades': 0, 'wins': 0, 'losses': 0, 'skipped_no_capital': 0
     }
     daily_logs = {}
 
-    signals = []
-    for i, idx in enumerate(ce_indices):
-        signals.append((idx, 0, ce_sl_arr[i], ce_tg_arr[i], ce_trail_arr[i]))
-    for i, idx in enumerate(pe_indices):
-        signals.append((idx, 1, pe_sl_arr[i], pe_tg_arr[i], pe_trail_arr[i]))
-
+    signals = [(idx, 0) for idx in ce_indices] + [(idx, 1) for idx in pe_indices]
     signals.sort(key=lambda x: x[0])
 
     last_exit_idx = -1
     current_date = None
     trades_today = 0
     profit_today = 0.0
+    
+    running_capital = initial_capital
 
     for sig in signals:
-        start_idx, opt_type, sl, tg, trail_dist = sig
+        start_idx, opt_type = sig
         
         if start_idx <= last_exit_idx:
             continue
@@ -184,28 +174,67 @@ def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce
         prices_high = CE_HIGH if opt_type == 0 else PE_HIGH
         prices_low = CE_LOW if opt_type == 0 else PE_LOW
         prices_close = CE_CLOSE if opt_type == 0 else PE_CLOSE
-        prices_next_open = CE_NEXT_OPEN if opt_type == 0 else PE_NEXT_OPEN
+        atrs = CE_ATR if opt_type == 0 else PE_ATR
 
-        # Enter on the immediate next 1-minute open + slippage
-        entry_price = prices_next_open[start_idx] + SLIPPAGE
-        highest_seen = entry_price
-        current_lot_size = get_nifty_lot_size(trade_date)
+        # --- LIMIT ORDER ENTRY LOGIC ---
+        limit_price = prices_close[start_idx] 
+        fill_price = 0.0
+        curr_idx = start_idx
         
-        curr_idx = start_idx + 1
+        for offset in range(1, 4): 
+            check_idx = start_idx + offset
+            if check_idx < len(DATES) and DATES[check_idx] == trade_date:
+                if prices_low[check_idx] <= limit_price:
+                    fill_price = limit_price
+                    curr_idx = check_idx
+                    break
+                    
+        if fill_price == 0.0:
+            continue 
+            
+        entry_price = fill_price
+        base_lot_size = get_nifty_lot_size(trade_date)
+        cost_per_lot = entry_price * base_lot_size
+        
+        # --- CAPITAL & POSITION SIZING LOGIC ---
+        if fixed_1_lot:
+            num_lots = 1
+            if running_capital < cost_per_lot:
+                stats['skipped_no_capital'] += 1
+                continue
+        else:
+            allocated_cash = running_capital * capital_allocation_pct
+            num_lots = int(allocated_cash // cost_per_lot)
+            
+            if num_lots < 1:
+                stats['skipped_no_capital'] += 1
+                continue 
+            
+            # Apply Hard Cap to prevent unrealistic liquidity assumptions
+            if num_lots > max_lots:
+                num_lots = max_lots
+                
+        total_quantity = num_lots * base_lot_size
+        highest_seen = entry_price
+        
+        current_atr = atrs[start_idx]
+        sl = entry_price - (current_atr * sl_atr)
+        tg = entry_price + (current_atr * target_atr)
+        trail_dist = current_atr * trailing_sl_atr
+
         exit_price = 0.0
         
-        # Step through 1-minute bars to manage target, SL, and trailing stoploss
+        # --- 1-MINUTE EXECUTION EVALUATION ---
         while curr_idx < len(DATES) and DATES[curr_idx] == trade_date:
             high = prices_high[curr_idx]
             low = prices_low[curr_idx]
             
-            # Pessimistic Check: Stop loss evaluated first
             if low <= sl:
-                exit_price = sl - SLIPPAGE
+                exit_price = sl - SLIPPAGE # Pay slippage on market stoploss
                 last_exit_idx = curr_idx
                 break
             if high >= tg:
-                exit_price = tg
+                exit_price = tg # No slippage on limit target
                 last_exit_idx = curr_idx
                 break
                 
@@ -219,9 +248,11 @@ def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce
             exit_price = prices_close[curr_idx - 1] - SLIPPAGE
             last_exit_idx = curr_idx - 1
             
-        trade_gross_pnl = (exit_price - entry_price) * current_lot_size
-        trade_charges = calculate_options_charges(entry_price, exit_price, current_lot_size)
+        trade_gross_pnl = (exit_price - entry_price) * total_quantity
+        trade_charges = calculate_options_charges(entry_price, exit_price, total_quantity)
         trade_net_pnl = trade_gross_pnl - trade_charges
+        
+        running_capital += trade_net_pnl
         
         daily_logs[trade_date_str]['trades'] += 1
         daily_logs[trade_date_str]['net_pnl'] += trade_net_pnl
@@ -241,25 +272,73 @@ def evaluate_and_report_unified(ce_indices, pe_indices, ce_sl_arr, ce_tg_arr, ce
 
     return stats, daily_logs
 
+
+# =====================================================================
+# 4. COMPREHENSIVE QUANTITATIVE REPORTING
+# =====================================================================
+def print_comprehensive_report(daily_logs, total_stats, initial_capital=70000.0):
+    if not daily_logs:
+        print("\nNo trades were logged. Report cannot be generated.")
+        return
+
+    df = pd.DataFrame.from_dict(daily_logs, orient='index')
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+    
+    df['cumulative_pnl'] = df['net_pnl'].cumsum()
+    df['equity'] = initial_capital + df['cumulative_pnl']
+    
+    df['hwm'] = df['equity'].cummax()
+    df['drawdown_pct'] = (df['equity'] - df['hwm']) / df['hwm']
+    df['drawdown_cash'] = df['equity'] - df['hwm']
+    
+    max_drawdown_pct = df['drawdown_pct'].min() * 100
+    max_drawdown_cash = df['drawdown_cash'].min()
+    
+    df['daily_return_pct'] = df['net_pnl'] / initial_capital
+    if len(df) > 1 and df['daily_return_pct'].std() != 0:
+        sharpe_ratio = np.sqrt(252) * (df['daily_return_pct'].mean() / df['daily_return_pct'].std())
+    else:
+        sharpe_ratio = 0.0
+
+    win_loss_ratio = total_stats['wins'] / total_stats['losses'] if total_stats['losses'] > 0 else total_stats['wins']
+    expectancy = total_stats['net_pnl'] / total_stats['trades'] if total_stats['trades'] > 0 else 0
+    total_return = (total_stats['net_pnl'] / initial_capital) * 100
+
+    print("\n" + "="*50)
+    mode_str = "FIXED 1-LOT BASELINE" if FIXED_1_LOT_BASELINE else f"DYNAMIC COMPOUNDING (Max {MAX_LOTS_CAP} Lots)"
+    print(f"📈 COMPREHENSIVE QUANTITATIVE REPORT [{mode_str}] 📈")
+    print("="*50)
+    print(f"Initial Capital      : ₹{initial_capital:,.2f}")
+    print(f"Net Profit           : ₹{total_stats['net_pnl']:,.2f}")
+    print(f"Total Return         : {total_return:.2f}%")
+    print("-" * 50)
+    print(f"Total Trades         : {total_stats['trades']}")
+    print(f"Skipped (No Margin)  : {total_stats.get('skipped_no_capital', 0)}")
+    print(f"Win/Loss Ratio       : {win_loss_ratio:.2f}")
+    print(f"Expectancy (Net)     : ₹{expectancy:,.2f} per trade")
+    print("-" * 50)
+    print(f"Max Drawdown (%)     : {max_drawdown_pct:.2f}%")
+    print(f"Max Drawdown (Cash)  : ₹{max_drawdown_cash:,.2f}")
+    print(f"Sharpe Ratio         : {sharpe_ratio:.2f}")
+    print("="*50)
+
+
+# =====================================================================
+# 5. EXECUTE BACKTEST
+# =====================================================================
 total_stats, daily_logs = evaluate_and_report_unified(
-    ce_indices, pe_indices, ce_sl, ce_tg, ce_trail, pe_sl, pe_tg, pe_trail, 
-    BEST_PARAMS['max_daily_trades'], BEST_PARAMS['max_daily_profit']
+    ce_indices, 
+    pe_indices, 
+    BEST_PARAMS['sl_atr'], 
+    BEST_PARAMS['target_atr'], 
+    BEST_PARAMS['trailing_sl_atr'], 
+    BEST_PARAMS['max_daily_trades'], 
+    BEST_PARAMS['max_daily_profit'],
+    initial_capital=INITIAL_CAPITAL,
+    capital_allocation_pct=CAPITAL_ALLOCATION_PCT,
+    max_lots=MAX_LOTS_CAP,
+    fixed_1_lot=FIXED_1_LOT_BASELINE
 )
 
-print("\n" + "="*50)
-print("🎯 OUT-OF-SAMPLE VALIDATION REPORT (5M SIGNALS / 1M EXECUTION) 🎯")
-print("="*50)
-print(f"Total Trades Taken  : {total_stats['trades']}")
-
-if total_stats['trades'] > 0:
-    win_rate = (total_stats['wins'] / total_stats['trades']) * 100
-    print(f"Winning Trades      : {total_stats['wins']}")
-    print(f"Losing Trades       : {total_stats['losses']}")
-    print(f"Win Rate            : {win_rate:.2f}%")
-    print("-" * 50)
-    print(f"Gross PnL           : ₹{total_stats['gross_pnl']:,.2f}")
-    print(f"Taxes & Brokerage   : ₹{total_stats['total_charges']:,.2f}")
-    print(f"NET PROFIT (REAL)   : ₹{total_stats['net_pnl']:,.2f}")
-else:
-    print("No trades triggered in the testing period.")
-print("="*50)
+print_comprehensive_report(daily_logs, total_stats, initial_capital=INITIAL_CAPITAL)
