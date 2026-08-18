@@ -35,7 +35,7 @@ BEST_PARAMS = {
 # --- REALITY CHECK CONSTRAINTS ---
 INITIAL_CAPITAL = 70000.0
 CAPITAL_ALLOCATION_PCT = 0.50  # Max 40% of running equity per trade
-MAX_LOTS_CAP = 3              # Prevent sweeping the order book (liquidity limit)
+MAX_LOTS_CAP = 5              # Prevent sweeping the order book (liquidity limit)
 FIXED_1_LOT_BASELINE = False    # Set to True to evaluate raw strategy edge, False to compound
 
 if not TESTING_DATA_PATH.exists():
@@ -276,54 +276,135 @@ def evaluate_and_report_unified(
 # =====================================================================
 # 4. COMPREHENSIVE QUANTITATIVE REPORTING
 # =====================================================================
-def print_comprehensive_report(daily_logs, total_stats, initial_capital=70000.0):
+def print_comprehensive_report(daily_logs, total_stats, all_dataset_dates, initial_capital=70000.0):
+    """
+    Prints a detailed quantitative analytics report covering timeline coverage,
+    daily activity distributions, risk metrics, and trade expectancy.
+    """
     if not daily_logs:
         print("\nNo trades were logged. Report cannot be generated.")
         return
 
-    df = pd.DataFrame.from_dict(daily_logs, orient='index')
-    df.index = pd.to_datetime(df.index)
-    df = df.sort_index()
+    # 1. Timeline & Date Aggregations
+    all_unique_dates = pd.to_datetime(pd.Series(all_dataset_dates).unique()).sort_values()
+    start_date = all_unique_dates.min()
+    end_date = all_unique_dates.max()
     
+    total_calendar_days = (end_date - start_date).days + 1
+    total_dataset_trading_days = len(all_unique_dates)
+    approx_months = max(1.0, total_calendar_days / 30.4375)
+
+    # 2. DataFrame Construction across All Trading Days
+    df_trades = pd.DataFrame.from_dict(daily_logs, orient='index')
+    df_trades.index = pd.to_datetime(df_trades.index)
+
+    # Reindex over all dataset dates so zero-trade days are accurately captured
+    df = pd.DataFrame(index=all_unique_dates)
+    df.index.name = 'Date'
+    df['trades'] = df_trades['trades'].reindex(df.index).fillna(0).astype(int)
+    df['net_pnl'] = df_trades['net_pnl'].reindex(df.index).fillna(0.0)
+
+    # 3. Daily Activity Breakdown
+    active_days_df = df[df['trades'] > 0]
+    active_trading_days = len(active_days_df)
+    idle_days = total_dataset_trading_days - active_trading_days
+    
+    winning_days_df = df[df['net_pnl'] > 0]
+    losing_days_df = df[df['net_pnl'] < 0]
+    breakeven_days_df = df[(df['net_pnl'] == 0) & (df['trades'] > 0)]
+
+    winning_days = len(winning_days_df)
+    losing_days = len(losing_days_df)
+    daily_win_rate = (winning_days / active_trading_days * 100) if active_trading_days > 0 else 0.0
+
+    avg_daily_pnl_all = df['net_pnl'].mean()
+    avg_daily_pnl_active = active_days_df['net_pnl'].mean() if active_trading_days > 0 else 0.0
+    avg_winning_day = winning_days_df['net_pnl'].mean() if winning_days > 0 else 0.0
+    avg_losing_day = losing_days_df['net_pnl'].mean() if losing_days > 0 else 0.0
+
+    best_day_pnl = df['net_pnl'].max()
+    worst_day_pnl = df['net_pnl'].min()
+
+    # 4. Equity Curve, Drawdowns & Profit Factor
     df['cumulative_pnl'] = df['net_pnl'].cumsum()
     df['equity'] = initial_capital + df['cumulative_pnl']
-    
     df['hwm'] = df['equity'].cummax()
     df['drawdown_pct'] = (df['equity'] - df['hwm']) / df['hwm']
     df['drawdown_cash'] = df['equity'] - df['hwm']
-    
+
     max_drawdown_pct = df['drawdown_pct'].min() * 100
     max_drawdown_cash = df['drawdown_cash'].min()
-    
+
+    gross_profit = total_stats.get('gross_pnl', 0.0)
+    gross_loss = abs(total_stats.get('gross_pnl', 0.0) - total_stats.get('net_pnl', 0.0))  # Estimated loss pool
+    profit_factor = (winning_days_df['net_pnl'].sum() / abs(losing_days_df['net_pnl'].sum())) if abs(losing_days_df['net_pnl'].sum()) > 0 else np.nan
+
+    # 5. Annualized Risk Metrics
     df['daily_return_pct'] = df['net_pnl'] / initial_capital
     if len(df) > 1 and df['daily_return_pct'].std() != 0:
         sharpe_ratio = np.sqrt(252) * (df['daily_return_pct'].mean() / df['daily_return_pct'].std())
     else:
         sharpe_ratio = 0.0
 
-    win_loss_ratio = total_stats['wins'] / total_stats['losses'] if total_stats['losses'] > 0 else total_stats['wins']
-    expectancy = total_stats['net_pnl'] / total_stats['trades'] if total_stats['trades'] > 0 else 0
     total_return = (total_stats['net_pnl'] / initial_capital) * 100
+    win_loss_ratio = total_stats['wins'] / total_stats['losses'] if total_stats['losses'] > 0 else total_stats['wins']
+    expectancy = total_stats['net_pnl'] / total_stats['trades'] if total_stats['trades'] > 0 else 0.0
 
-    print("\n" + "="*50)
+    # =================================================================
+    # TERMINAL REPORT RENDERING
+    # =================================================================
     mode_str = "FIXED 1-LOT BASELINE" if FIXED_1_LOT_BASELINE else f"DYNAMIC COMPOUNDING (Max {MAX_LOTS_CAP} Lots)"
-    print(f"📈 COMPREHENSIVE QUANTITATIVE REPORT [{mode_str}] 📈")
-    print("="*50)
-    print(f"Initial Capital      : ₹{initial_capital:,.2f}")
-    print(f"Net Profit           : ₹{total_stats['net_pnl']:,.2f}")
-    print(f"Total Return         : {total_return:.2f}%")
-    print("-" * 50)
-    print(f"Total Trades         : {total_stats['trades']}")
-    print(f"Skipped (No Margin)  : {total_stats.get('skipped_no_capital', 0)}")
-    print(f"Win/Loss Ratio       : {win_loss_ratio:.2f}")
-    print(f"Expectancy (Net)     : ₹{expectancy:,.2f} per trade")
-    print("-" * 50)
-    print(f"Max Drawdown (%)     : {max_drawdown_pct:.2f}%")
-    print(f"Max Drawdown (Cash)  : ₹{max_drawdown_cash:,.2f}")
-    print(f"Sharpe Ratio         : {sharpe_ratio:.2f}")
-    print("="*50)
+    
+    print("\n" + "=" * 65)
+    print(f"📈 COMPREHENSIVE QUANTITATIVE PERFORMANCE REPORT [{mode_str}] 📈")
+    print("=" * 65)
+    
+    print("\n📅 1. TIMELINE & COVERAGE")
+    print("-" * 65)
+    print(f"Testing Period               : {start_date.strftime('%d %b %Y')} to {end_date.strftime('%d %b %Y')}")
+    print(f"Duration                     : {approx_months:.1f} Months ({total_calendar_days} Calendar Days)")
+    print(f"Total Market Trading Days    : {total_dataset_trading_days} Days")
+    print(f"Active Trading Days (Traded) : {active_trading_days} Days ({(active_trading_days / total_dataset_trading_days)*100:.1f}%)")
+    print(f"Idle Days (No Signals Taken) : {idle_days} Days ({(idle_days / total_dataset_trading_days)*100:.1f}%)")
+
+    print("\n💰 2. CAPITAL & RETURNS")
+    print("-" * 65)
+    print(f"Initial Capital              : ₹{initial_capital:,.2f}")
+    print(f"Final Equity Base            : ₹{(initial_capital + total_stats['net_pnl']):,.2f}")
+    print(f"Gross Profit                 : ₹{total_stats['gross_pnl']:,.2f}")
+    print(f"Taxes & Brokerage Charges    : ₹{total_stats['total_charges']:,.2f}")
+    print(f"Net Profit (Realized)        : ₹{total_stats['net_pnl']:,.2f}")
+    print(f"Total Return                 : {total_return:.2f}%")
+    print(f"Monthly Run Rate (Avg)       : ₹{(total_stats['net_pnl'] / approx_months):,.2f} / month")
+
+    print("\n📊 3. DAILY PERFORMANCE METRICS")
+    print("-" * 65)
+    print(f"Winning Days vs Losing Days  : {winning_days} Wins / {losing_days} Losses")
+    print(f"Daily Win Rate               : {daily_win_rate:.2f}%")
+    print(f"Daily Profit Factor          : {profit_factor:.2f}")
+    print(f"Avg Profit (Active Days)     : ₹{avg_daily_pnl_active:,.2f} / day")
+    print(f"Avg Profit (All Market Days) : ₹{avg_daily_pnl_all:,.2f} / day")
+    print(f"Average Winning Day          : ₹{avg_winning_day:,.2f}")
+    print(f"Average Losing Day           : ₹{avg_losing_day:,.2f}")
+    print(f"Best Single Day PnL          : ₹{best_day_pnl:,.2f}")
+    print(f"Worst Single Day PnL         : ₹{worst_day_pnl:,.2f}")
+
+    print("\n🎯 4. TRADE-LEVEL EXPECTANCY & RISK")
+    print("-" * 65)
+    print(f"Total Executed Trades        : {total_stats['trades']}")
+    print(f"Skipped (No Margin Buffer)   : {total_stats.get('skipped_no_capital', 0)}")
+    print(f"Avg Trades per Active Day    : {(total_stats['trades'] / active_trading_days):.2f}" if active_trading_days > 0 else "0.00")
+    print(f"Win / Loss Ratio             : {win_loss_ratio:.2f}")
+    print(f"Net Expectancy               : ₹{expectancy:,.2f} per trade")
+    print(f"Max Drawdown (%)             : {max_drawdown_pct:.2f}%")
+    print(f"Max Drawdown (Cash)          : ₹{max_drawdown_cash:,.2f}")
+    print(f"Sharpe Ratio (Annualized)    : {sharpe_ratio:.2f}")
+    print("=" * 65 + "\n")
 
 
+# =====================================================================
+# 5. EXECUTE BACKTEST
+# =====================================================================
 # =====================================================================
 # 5. EXECUTE BACKTEST
 # =====================================================================
@@ -341,4 +422,5 @@ total_stats, daily_logs = evaluate_and_report_unified(
     fixed_1_lot=FIXED_1_LOT_BASELINE
 )
 
-print_comprehensive_report(daily_logs, total_stats, initial_capital=INITIAL_CAPITAL)
+# Pass DATES as the third argument
+print_comprehensive_report(daily_logs, total_stats, DATES, initial_capital=INITIAL_CAPITAL)
