@@ -36,6 +36,10 @@ logger.addHandler(zmq_handler)
 ustox = UpstoxClient()
 MATRIX_CACHE_DIR = Path(__file__).resolve().parent / "data" / "cache" / "matrices"
 MATRIX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+REPORTS_DIR = ROOT_DIR / "data" / "reports"
+REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
 print(
     "--------------------HYBRID LIVE TRADING ENGINE (5M Strategy / 1M Execution)--------------------".center(
         shutil.get_terminal_size().columns
@@ -43,7 +47,7 @@ print(
 )
 
 # =====================================================================
-# THE GEAR BOX: UNIFIED MTF PARAMETERS (5-MIN TIMEFRAME)
+# THE GEAR BOX: UNIFIED MTF PARAMETERS (SYNCHRONIZED WITH TESTER)
 # =====================================================================
 BEST_PARAMS = {
     "rsi_min": 60,
@@ -57,24 +61,32 @@ BEST_PARAMS = {
     "sl_atr": 1.5,
     "target_atr": 5.0,
     "trailing_sl_atr": 1.2,
-    "max_daily_trades": 3, # Handled by your Risk Monitor kill-switch safely
+    "max_daily_trades": 3,
     "max_daily_profit": 12000, 
+    "capital_allocation_pct": 0.50,
+    "max_lots_cap": 5,
+    "initial_capital": 70000.0,
 }
 
-# =====================================================================
-# MARKET FRICTION & LATENCY VARIABLES
-# =====================================================================
-SLIPPAGE = 0.25  # Slippage per market order fill (applied to SL/EOD only)
+SLIPPAGE = 0.25
 
-# =====================================================================
-# HELPER FUNCTIONS & MULTI-TIMEFRAME RESAMPLER
-# =====================================================================
 def resample_to_5m(df_1m: pd.DataFrame) -> pd.DataFrame:
-    """Aggregates 1-minute OHLCV data into 5-minute candles."""
+    """Aggregates 1-minute OHLCV data into 5-minute candles safely handling index mapping."""
     if df_1m.empty:
         return df_1m
 
-    resampled = df_1m.resample("5min", origin="start_day").agg({
+    df_working = df_1m.copy()
+    if not isinstance(df_working.index, pd.DatetimeIndex):
+        if "timestamp" in df_working.columns:
+            df_working["timestamp"] = pd.to_datetime(df_working["timestamp"])
+            df_working.set_index("timestamp", inplace=True)
+        elif "time" in df_working.columns:
+            df_working["timestamp"] = pd.to_datetime(df_working["time"])
+            df_working.set_index("timestamp", inplace=True)
+        else:
+            return pd.DataFrame()
+
+    resampled = df_working.resample("5min", origin="start_day").agg({
         "open": "first",
         "high": "max",
         "low": "min",
@@ -93,38 +105,51 @@ def place_buy_order(
     spot_row,
     gear_name,
     timestamp,
+    locked_limit_price,
+    locked_atr
 ):
     try:
-        atr = opt_row.get("ATRr_14", 0)
-        if atr == 0:
-            return -1
-
-        # LIMIT ORDER ASSIGNMENT - Avoid slippage directly
-        limit_price = opt_row.get("close", 0)
-
-        qty = trader.calculate_units(close=limit_price, lot_size=opt_leg.lot_size)
+        # --- REALISTIC POSITION SIZING ---
+        running_capital = trader.portfolio.funds.total
+        allocated_cash = running_capital * active_params.get("capital_allocation_pct", 0.50)
+        cost_per_lot = locked_limit_price * opt_leg.lot_size
+        
+        num_lots = int(allocated_cash // cost_per_lot)
+        max_lots = active_params.get("max_lots_cap", 5)
+        
+        if num_lots > max_lots:
+            num_lots = max_lots
+            
+        qty = num_lots * opt_leg.lot_size
+        
         if qty == 0:
+            logger.warning(f"[{gear_name}] Insufficient margin for 1 lot. Skipping trade.")
             return -1
 
         # Placing a limit order via broker
-        status = trader.broker.buy_order(key=opt_leg.key, price=limit_price, qty=qty, order_type="LIMIT")
+        status = trader.broker.buy_order(key=opt_leg.key, price=locked_limit_price, qty=qty, order_type="LIMIT")
         
-        if status is None or status.get("status") != "success":
-            logger.error(f"Order failed or rejected by API: {status}")
+        # --- ROBUST API SCHEMA PARSING (Matches Upstox API) ---
+        ord_id = None
+        if isinstance(status, dict):
+            if status.get("status") != "success":
+                logger.error(f"[{gear_name}] Broker API rejected order: {status}")
+                return -1
+            ord_id = status.get("data", {}).get("order_ids", ["sim_order_obj"])[0]
+        elif status == -1 or status is None:
+            logger.error(f"[{gear_name}] Order failed silently at broker level.")
             return -1
-
-        ord_id = status["data"]["order_ids"][0]
-        
+        else:
+            ord_id = str(status) 
+            
         from types import SimpleNamespace
         pos = SimpleNamespace(instrument_key=opt_leg.key)
         
         bucket.open_position = pos
-        bucket.open_position.target = limit_price + (active_params["target_atr"] * atr)
-        bucket.open_position.stoploss = limit_price - (active_params["sl_atr"] * atr)
-        bucket.open_position.trail_dist = (
-            active_params.get("trailing_sl_atr", 1.5) * atr
-        )
-        bucket.open_position.highest_seen = limit_price
+        bucket.open_position.target = locked_limit_price + (active_params["target_atr"] * locked_atr)
+        bucket.open_position.stoploss = locked_limit_price - (active_params["sl_atr"] * locked_atr)
+        bucket.open_position.trail_dist = active_params.get("trailing_sl_atr", 1.2) * locked_atr
+        bucket.open_position.highest_seen = locked_limit_price
 
         trader.portfolio.report.append(
             Trade(
@@ -132,46 +157,16 @@ def place_buy_order(
                 instrument_key=opt_leg.key,
                 buy_timestamp=timestamp,
                 side=opt_leg.type,
-                buy_price=limit_price,
+                buy_price=locked_limit_price,
                 buy_qty=qty,
                 buy_conditions=spot_row.to_dict(),
             )
         )
-        logger.info(
-            f"[{gear_name}] LIMIT ORDER PLACED/FILLED: Buy {opt_leg.type} @ ₹{limit_price:.2f} # Qty {qty}"
-        )
+        logger.info(f"[{gear_name}] LIMIT ORDER ACCEPTED: Buy {opt_leg.type} @ ₹{locked_limit_price:.2f} | Qty {qty} ({num_lots} lots)")
         return 1
     except Exception as e:
         logger.exception(f"Error in place_buy_order: {e}")
         return -1
-
-
-def _change_gears(trader, timestamp):
-    try:
-        today = timestamp.date()
-        daily_trades = []
-        for t in trader.portfolio.report:
-            ts = getattr(t, "buy_timestamp", getattr(t, "Buy_timestamp", None))
-            if ts and pd.Timestamp(ts).date() == today:
-                daily_trades.append(t)
-
-        daily_realized_pnl = sum(
-            getattr(t, "pnl", getattr(t, "PnL", 0))
-            for t in daily_trades
-            if getattr(t, "remark", getattr(t, "Remark", "")) in ["T", "SL", "EOD", "TARGET", "STOPLOSS"]
-        )
-
-        num_trades_today = len(daily_trades)
-
-        if (
-            daily_realized_pnl >= SCALP_BEST_PARAMS["max_daily_profit"]
-            or num_trades_today >= SCALP_BEST_PARAMS["max_daily_trades"]
-        ):
-            return SNIPE_BEST_PARAMS, "SNIPER"
-        return SCALP_BEST_PARAMS, "SCALP"
-    except Exception as e:
-        logger.exception(f"Error in _change_gears: {e}")
-        return SCALP_BEST_PARAMS, "SCALP"
 
 
 def _close_trade(trader, bucket, timestamp, exit_price, remark, gear_name):
@@ -181,20 +176,24 @@ def _close_trade(trader, bucket, timestamp, exit_price, remark, gear_name):
         buy_qty = getattr(report, "buy_qty", getattr(report, "Buy_qty", 0))
         buy_price = getattr(report, "buy_price", getattr(report, "Buy_price", 0))
 
+        trade_gross = (exit_price - buy_price) * buy_qty
+        trade_charges = calculate_trade_charges(buy_price, exit_price, buy_qty, instrument='O', trade_type='I')
+        trade_net = trade_gross - trade_charges
+
         report.sell_qty = buy_qty
         report.sell_timestamp = timestamp
         report.sell_price = exit_price
         report.remark = remark
         report.movement = exit_price - buy_price
-        report.pnl = (exit_price * buy_qty) - (buy_price * buy_qty)
+        report.pnl = trade_net
+        report.charges = trade_charges
+        
+        bucket.open_position = None
+        trader.portfolio.funds.total += trade_net
         report.total = trader.portfolio.funds.total
 
-        bucket.open_position = None
-        trader.portfolio.funds.settle()
-
-        pnl = getattr(report, "pnl", getattr(report, "PnL", 0))
         logger.info(
-            f"[{gear_name}] Position Closed: {timestamp} | {remark} | Fill Price: ₹{exit_price:.2f} | Net PnL: ₹{pnl:.2f}"
+            f"[{gear_name}] Position Closed: {timestamp} | {remark} | Fill: ₹{exit_price:.2f} | Net PnL: ₹{trade_net:.2f}"
         )
     except Exception as e:
         logger.exception(f"Error in _close_trade: {e}")
@@ -205,12 +204,17 @@ def _evaluate_signals(spot_row, spot_prev, params):
     adx = spot_row.get("ADX_14", 0)
     spot_close = spot_row.get("close", 0)
 
+    if pd.isna(rsi) or pd.isna(adx):
+        return False, False
+
     supert_slope = spot_row.get("SUPERT_14_2.0", 0) - spot_prev.get("SUPERT_14_2.0", 0)
     bbu, bbl = spot_row.get("BBU_20_2.0", 0), spot_row.get("BBL_20_2.0", 0)
     bb_width = ((bbu - bbl) / spot_close) if spot_close > 0 else 1.0
 
-    ce_cond = (rsi > params["rsi_min"]) and (adx > params["adx_min"])
-    pe_cond = (rsi < (100 - params["rsi_min"])) and (adx > params["adx_min"])
+    adx_max = params.get("adx_max", 75)
+    
+    ce_cond = (rsi > params["rsi_min"]) and (params["adx_min"] < adx < adx_max)
+    pe_cond = (rsi < (100 - params["rsi_min"])) and (params["adx_min"] < adx < adx_max)
 
     if params["use_ema"]:
         ema_200 = spot_row.get("EMA_200", 0)
@@ -238,9 +242,8 @@ def _evaluate_signals(spot_row, spot_prev, params):
     return ce_cond, pe_cond
 
 
-# =====================================================================
-# LIVE EXECUTOR & POSITION MANAGER (1-MIN RESOLUTION FOR POSITIONS)
-# =====================================================================
+_BUCKET_STATE = {}
+
 async def execute_live(
     trader: ana.Trader,
     bucket: Bucket,
@@ -248,6 +251,8 @@ async def execute_live(
     data_frames: dict = None,
     **kwargs,
 ):
+    global _BUCKET_STATE
+    
     spot: Instrument = bucket.spot
     call_option: Instrument = bucket.legs.get("CE")
     put_option: Instrument = bucket.legs.get("PE")
@@ -283,34 +288,46 @@ async def execute_live(
         }
         await ui_socket.send_string(json.dumps(payload))
 
-    # --- SIMPLIFIED UNIFIED GEAR ---
     ACTIVE_PARAMS = BEST_PARAMS
     gear_name = "MTF_ENGINE"
 
-    # 1. Intra-Candle Open Position Management (Evaluated every 1-Minute Candle)
-    if bucket.open_position is not None:
-        _manage_position_live(
-            bucket,
-            call_option,
-            put_option,
-            ce_df,
-            pe_df,
-            timestamp,
-            ACTIVE_PARAMS,
-            gear_name,
-            trader,
-        )
-        return
-    # 2. Strategy Signal Generation (Evaluated ONLY at 5-Minute Candle Closures)
-    curr_time = timestamp.time()
-    if curr_time > dt.time(15, 10):
-        return
+    # 1. PROCESS PENDING LIMIT ORDERS (1-Minute Queue)
+    if getattr(bucket, "pending_entry", None) is not None:
+        pending = bucket.pending_entry
+        active_opt = call_option if pending["side"] == "CE" else put_option
+        active_row = ce_row if pending["side"] == "CE" else pe_row
+        
+        # Penetration Logic: Must drop strictly BELOW limit price to trigger
+        if active_row.get("low", float('inf')) < pending["limit_price"]:
+            logger.info(f"[{gear_name}] QUEUE FILLED! Executing {pending['side']} @ ₹{pending['limit_price']}")
+            place_buy_order(
+                active_opt, active_row, bucket, trader, ACTIVE_PARAMS, 
+                pending["spot_row"], gear_name, timestamp, 
+                pending["limit_price"], pending["atr"]
+            )
+            bucket.pending_entry = None
+        else:
+            pending["bars_waiting"] += 1
+            if pending["bars_waiting"] >= 3:
+                logger.info(f"[{gear_name}] Limit Order Expired (Price never touched). Canceling.")
+                bucket.pending_entry = None
 
-    # Check if the current 1-minute timestamp marks a 5-minute boundary completion
-    if timestamp.minute % 5 == 4 or timestamp.minute % 5 == 0:
+    # 2. INTRA-CANDLE OPEN POSITION MANAGEMENT
+    elif bucket.open_position is not None:
+        _manage_position_live(
+            bucket, call_option, put_option, ce_df, pe_df,
+            timestamp, ACTIVE_PARAMS, gear_name, trader
+        )
+        
+    # 3. STRATEGY SIGNAL DETECTION (Only at 5-Minute Boundaries)
+    elif timestamp.minute % 5 == 4 or timestamp.minute % 5 == 0:
+        if timestamp.time() > dt.time(15, 10):
+            return
+
+        bucket_id = str(bucket.date) 
         current_5m_boundary = timestamp.floor("5min")
         
-        if getattr(bucket, 'last_signal_5m', None) != current_5m_boundary:
+        if _BUCKET_STATE.get(bucket_id) != current_5m_boundary:
             spot_df_5m = trader.strategy.apply(resample_to_5m(spot_df), key=spot.key)
             
             if len(spot_df_5m) >= 3:
@@ -320,25 +337,36 @@ async def execute_live(
                 ce_cond, pe_cond = _evaluate_signals(spot_closed_5m, spot_prev_5m, ACTIVE_PARAMS)
                 
                 if ce_cond or pe_cond:
-                    bucket.last_signal_5m = current_5m_boundary
+                    _BUCKET_STATE[bucket_id] = current_5m_boundary
                     
+                    # Ensure daily limits aren't breached before queueing the order
+                    today = timestamp.date()
+                    daily_trades = [t for t in trader.portfolio.report if pd.to_datetime(getattr(t, "buy_timestamp")).date() == today]
+                    daily_profit = sum(getattr(t, "pnl", 0) for t in daily_trades if getattr(t, "remark", None) is not None)
+
+                    if len(daily_trades) >= ACTIVE_PARAMS["max_daily_trades"] or daily_profit >= ACTIVE_PARAMS["max_daily_profit"]:
+                        return
+
                     if ce_cond:
-                        logger.info(f"[{gear_name}] 5M SIGNAL FIRED (CE)! Executing Limit Order on Option Close...")
-                        place_buy_order(call_option, ce_row, bucket, trader, ACTIVE_PARAMS, spot_closed_5m, gear_name, timestamp)
+                        logger.info(f"[{gear_name}] 5M SIGNAL (CE) -> Order Queued...")
+                        bucket.pending_entry = {
+                            "side": "CE", "limit_price": ce_row.get("close", 0), "bars_waiting": 0,
+                            "spot_row": spot_closed_5m, "atr": ce_row.get("ATRr_14", 0)
+                        }
                     elif pe_cond:
-                        logger.info(f"[{gear_name}] 5M SIGNAL FIRED (PE)! Executing Limit Order on Option Close...")
-                        place_buy_order(put_option, pe_row, bucket, trader, ACTIVE_PARAMS, spot_closed_5m, gear_name, timestamp)
+                        logger.info(f"[{gear_name}] 5M SIGNAL (PE) -> Order Queued...")
+                        bucket.pending_entry = {
+                            "side": "PE", "limit_price": pe_row.get("close", 0), "bars_waiting": 0,
+                            "spot_row": spot_closed_5m, "atr": pe_row.get("ATRr_14", 0)
+                        }
 
 
 def _manage_position_live(
     bucket, call_option, put_option, ce_df, pe_df, timestamp, active_params, gear_name, trader
 ):
-    """Evaluates stoplosses and targets intra-candle using 1-minute OHLC data."""
     try:
         pos = bucket.open_position
-        pos_key = getattr(
-            pos, "instrument_token", getattr(pos, "instrument_key", getattr(pos, "key", None))
-        )
+        pos_key = getattr(pos, "instrument_token", getattr(pos, "instrument_key", getattr(pos, "key", None)))
         is_ce = pos_key == call_option.key
 
         active_opt = call_option if is_ce else put_option
@@ -350,26 +378,23 @@ def _manage_position_live(
 
         if not hasattr(pos, "highest_seen"):
             pos.highest_seen = close
+            # Fallback if somehow ATR wasn't locked at the start (should not happen with queue)
             atr = active_row.get("ATRr_14", 1.0)
-            pos.trail_dist = active_params.get("trailing_sl_atr", 1.5) * atr
+            pos.trail_dist = active_params.get("trailing_sl_atr", 1.2) * atr
             if not hasattr(pos, "target"):
                 pos.target = close + (active_params["target_atr"] * atr)
             if not hasattr(pos, "stoploss"):
                 pos.stoploss = close - (active_params["sl_atr"] * atr)
 
-        # Pessimistic Check: Stop loss evaluated first
         stoploss_hit = low <= pos.stoploss
         target_hit = high >= pos.target
         eod_square_off = timestamp.time() >= dt.time(15, 15)
 
         if stoploss_hit or target_hit or eod_square_off:
             remark = "STOPLOSS" if stoploss_hit else ("TARGET" if target_hit else "EOD")
-            logger.info(f"[{gear_name}] {remark} TRIGGERED (Intra-Candle 1m resolution)...")
-
             last_trade = trader.portfolio.report[-1]
             qty_to_sell = getattr(last_trade, "buy_qty", getattr(last_trade, "Buy_qty", 0))
 
-            # Limit targets exit seamlessly, stoplosses/EOD exit at market paying slippage
             exit_price = (pos.stoploss - SLIPPAGE) if stoploss_hit else (pos.target if target_hit else close - SLIPPAGE)
 
             status = trader.broker.sell_order(key=active_opt.key, qty=qty_to_sell, price=exit_price)
@@ -388,13 +413,19 @@ def _manage_position_live(
 
 def _aggregate_tick(inst: Instrument, tick):
     try:
-        new_candle = tick.ohlc_1m if hasattr(tick, "ohlc_1m") else tick
+        new_candle = tick.ohlc_1m if hasattr(tick, "ohlm_1m") else tick
         if tick is None:
             return
+            
         minute_ts = new_candle.timestamp.replace(second=0, microsecond=0)
         last_candle = inst.historical_candles[-1] if inst.historical_candles else None
+        
         if last_candle is not None and last_candle.timestamp.tzinfo is not None:
-            minute_ts = minute_ts.tz_localize(last_candle.timestamp.tz) 
+            target_tz = last_candle.timestamp.tzinfo
+            if minute_ts.tzinfo is None:
+                minute_ts = minute_ts.tz_localize(target_tz)
+            else:
+                minute_ts = minute_ts.tz_convert(target_tz)
 
         if last_candle and last_candle.timestamp == minute_ts:
             last_candle.high = max(last_candle.high, new_candle.high)
@@ -408,7 +439,7 @@ def _aggregate_tick(inst: Instrument, tick):
             c.timestamp = minute_ts
             inst.historical_candles.append(c)
     except Exception as e:
-        logger.info(f"{e}")
+        logger.error(f"Error in _aggregate_tick: {e}")
 
 
 async def processor(
@@ -515,18 +546,18 @@ def _setup_sim_dummy(spot, trading_date, spot_file, ce_file, pe_file):
     ce_meta = options[options["instrument_key"] == best_ce].iloc[0].to_dict()
     ce_meta["date"] = trading_date
     parsed_insts.append(
-        Instrument.load_instrument(client=ustox, data=ce_data, metadata=ce_meta, lookback=2, load_history=True, is_expired=False)
+        Instrument.load_instrument(client=ustox, data=ce_data, metadata=ce_meta, lookback=4, load_history=True, is_expired=False)
     )
 
     pe_meta = options[options["instrument_key"] == best_pe].iloc[0].to_dict()
     pe_meta["date"] = trading_date
     parsed_insts.append(
-        Instrument.load_instrument(client=ustox, data=pe_data, metadata=pe_meta, lookback=1, load_history=True, is_expired=False)
+        Instrument.load_instrument(client=ustox, data=pe_data, metadata=pe_meta, lookback=4, load_history=True, is_expired=False)
     )
 
     spot_meta = {"instrument_key": spot, "instrument_type": "INDEX", "exchange": "NSE", "date": trading_date}
     parsed_insts.append(
-        Instrument.load_instrument(client=ustox, data=spot_data, metadata=spot_meta, lookback=2, load_history=True, is_expired=False)
+        Instrument.load_instrument(client=ustox, data=spot_data, metadata=spot_meta, lookback=4, load_history=True, is_expired=False)
     )
 
     for inst in parsed_insts:
@@ -548,11 +579,11 @@ def _setup_live(spot: str | list[str], trading_date: date):
     market_quote = ustox.get_marketquote(instrument_key=insts["instrument_key"].to_list())
     best_ce, best_pe = _get_best_options(insts, market_quote)
     options = insts[(insts["instrument_key"] == best_ce) | (insts["instrument_key"] == best_pe)]
-    parsed_insts = Instrument.parse_options(client=ustox, options=options, lookback=2, is_expired=False)
+    parsed_insts = Instrument.parse_options(client=ustox, options=options, lookback=4, is_expired=False)
 
     spot_data = ustox.get_historical(dtype="intraday", instrument_key=spot)
     spot_metadata = {"instrument_key": spot, "instrument_type": "INDEX", "exchange": "NSE", "date": trading_date}
-    spot_inst = Instrument.load_instrument(client=ustox, data=spot_data, metadata=spot_metadata, lookback=2, load_history=True)
+    spot_inst = Instrument.load_instrument(client=ustox, data=spot_data, metadata=spot_metadata, lookback=4, load_history=True)
     parsed_insts.append(spot_inst)
     return parsed_insts
 
@@ -567,7 +598,7 @@ def _setup_sim(args):
             data_dir = Path(data_dir).resolve().absolute()
             files.extend(list(data_dir.iterdir()))
     files.sort()
-    return Instrument.load_multiple(client=ustox, source=files, lookback=2)
+    return Instrument.load_multiple(client=ustox, source=files, lookback=4)
 
 
 def setup_mode(args, trader: ana.Trader):
@@ -584,6 +615,44 @@ def setup_mode(args, trader: ana.Trader):
     trader.add_instrument(insts_dict)
     return insts_dict
 
+def _export_livetrader_reports(trader):
+    """Intercepts and dumps trade logs to CSV/Parquet for institutional reconciliation."""
+    trade_rows = []
+    for idx, t in enumerate(trader.portfolio.report):
+        remark = getattr(t, "remark", getattr(t, "Remark", None))
+        if remark:
+            buy_price = float(getattr(t, "buy_price", 0))
+            sell_price = float(getattr(t, "sell_price", 0))
+            quantity = int(getattr(t, "buy_qty", 0))
+            
+            # Calculate gross PnL dynamically on export
+            gross_pnl = (sell_price - buy_price) * quantity
+
+            trade_rows.append({
+                "trade_id": f"LIVE_{idx+1:04d}",
+                "date": str(pd.to_datetime(getattr(t, "buy_timestamp")).date()),
+                "side": getattr(t, "side", getattr(t, "Side", "")),
+                "buy_timestamp": str(getattr(t, "buy_timestamp")),
+                "sell_timestamp": str(getattr(t, "sell_timestamp")),
+                "buy_price": round(buy_price, 2),
+                "sell_price": round(sell_price, 2),
+                "quantity": quantity,
+                "gross_pnl": round(gross_pnl, 2),
+                "charges": round(float(getattr(t, "charges", 0)), 2),
+                "net_pnl": round(float(getattr(t, "pnl", 0)), 2),
+                "remark": remark,
+                "running_capital": round(float(getattr(t, "total", 0)), 2)
+            })
+
+    if trade_rows:
+        df_export = pd.DataFrame(trade_rows)
+        csv_path = REPORTS_DIR / "livetrader_trades.csv"
+        parquet_path = REPORTS_DIR / "livetrader_trades.parquet"
+        df_export.to_csv(csv_path, index=False)
+        df_export.to_parquet(parquet_path, index=False)
+        print(f"\n📊 Live Trader reports successfully saved to:\n  - {csv_path}\n  - {parquet_path}")
+    else:
+        print("\n⚠️ No closed trades found to export.")
 
 def _print_trade_report(trader):
     print("\n" + "=" * 50)
@@ -673,15 +742,16 @@ async def starter(trader, args, tradable_insts, feeder_queue):
 
 def main():
     args = setup_cli()
-    capital: Funds = Funds.update_from_json(ustox.get_funds())
-    prtf = Portfolio(funds=capital)
+    
+    # Capital constraints initialized securely here
+    prtf = Portfolio(funds=Funds(starting_capital=BEST_PARAMS["initial_capital"]))
     feeder_queue = asyncio.Queue(maxsize=10)
     strat = ana.Strategy()
 
     trader = ana.Trader(
         portfolio=prtf,
         strategy=strat,
-        broker=ana.LiveBroker(ustox),
+        broker=ana.LiveBroker(ustox) if args.command == "live" else ana.SimBroker(portfolio=prtf),
         datafeed=feeder_queue,
     )
 
@@ -690,7 +760,7 @@ def main():
 
     for instrument in tqdm(trader.instruments.values(), desc="Filtering instruments", leave=False):
         leg_type = "CE" if "CE" in instrument.type else ("PE" if "PE" in instrument.type else "INDEX")
-        daily_buckets[instrument.date][leg_type] = instrument
+        daily_buckets[instrument.date][leg_type] = instrument   
 
     for trade_date, legs in tqdm(daily_buckets.items(), desc="Loading Buckets", leave=False):
         options = {k: v for k, v in legs.items() if k in ["CE", "PE"]}
@@ -713,6 +783,7 @@ def main():
             starter(trader=trader, args=args, tradable_insts=tradable_insts, feeder_queue=feeder_queue)
         )
         _print_trade_report(trader)
+        _export_livetrader_reports(trader)
     except Exception as e:
         logger.exception(f"Exception {e}")
 

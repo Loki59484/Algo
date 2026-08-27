@@ -250,7 +250,7 @@ class UpstoxClient:
                 return response.json() if return_json else response
 
             except requests.exceptions.RequestException as e:
-                logger.exception(f"Network error on {url}: {e}")
+                logger.exception(f"Network error on {url}: {e}",stack_info=True)
                 retries += 1
                 time.sleep(backoff_time)
 

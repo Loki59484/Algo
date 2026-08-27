@@ -440,6 +440,7 @@ class Trade:
     buy_conditions: None | dict = None
     sell_conditions: None | dict = None
     total: None | float = None
+    charges: None | float = None
 
 class Instrument:
     """

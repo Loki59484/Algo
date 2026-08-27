@@ -216,7 +216,7 @@ class SimfeedStreamer(Streamer):
                     i += 1
                     
                     # Slight delay to allow processor to yield and execute async context
-                    await asyncio.sleep(0.1) 
+                    await asyncio.sleep(0.01) 
                 else:
                     logger.info("Simulation Stopped")
                     break
@@ -354,65 +354,85 @@ class Strategy:
 
 
 class SimBroker(Broker):
+    """
+    An event-driven Mock Broker that strictly replicates Upstox API responses, 
+    margin constraints, and dictionary schemas to trick the LiveTrader.
+    """
 
     def __init__(self, portfolio):
         super().__init__()
         self.portfolio: Portfolio = portfolio
 
-    def buy_order(self, key: str, price: float, qty: int, **kwargs):
-        """
-        Function to acknowledge buy requests while simulating.
-        Creates a strictly isolated position for every new execution.
-        """
-
+    def buy_order(self, key: str, price: float, qty: int, order_type="LIMIT", **kwargs):
+        """Mock Buy Order with strict Upstox API response simulation."""
+        
         cost = price * qty
-        status = self.portfolio.funds.debit(cost)
-        if status == -1:
-            logger.warning("Order failed due to insufficient funds.")
-            return None
+        
+        # 1. Strict Margin Enforcement
+        if self.portfolio.funds.available_margin < cost:
+            logger.warning(f"SimBroker [EXCHANGE REJECT]: Insufficient funds for {qty} qty at ₹{price}.")
+            return {
+                "status": "error", 
+                "errors": [{"message": "Insufficient funds or margin", "errorCode": "UDYN01"}]
+            }
             
-        order_id = str(randint(1000000, 9999999))
+        # 2. Simulate Broker Order Generation
+        order_id = f"SIM_{randint(10000000, 99999999)}"
 
-        # Do NOT accumulate quantity. 
-        # Overwrite the dictionary key with a brand new, isolated Position object.
+        # 3. Process Gross Debit (Friction handled by trader closing logic)
+        debit_status = self.portfolio.funds.debit(cost)
+        if debit_status == -1:
+            return {"status": "error", "errors": [{"message": "Simulated Debit Failed"}]}
+
+        # 4. Create isolated position record
         self.portfolio.positions[key] = Position(
             instrument_token=key, 
             buy_price=price, 
             day_buy_quantity=qty
         )
 
-        logger.info(f"{key} | Buy order placed succesfully for {qty} at {price}.")
-        return self.portfolio.positions[key], order_id
+        logger.info(f"SimBroker: {key} | BUY {order_type} EXECUTED for {qty} qty at ₹{price}.")
+        
+        # 5. Return exact Upstox schema
+        return {
+            "status": "success", 
+            "data": {"order_ids": [order_id]}
+        }
 
-    def sell_order(self, key: str, price: float, qty: int, **kwargs):
-        """
-        Function to acknowledge sell requests while simulating
-
-        Returns
-        -------
-        Order
-        """
-        amount = price * qty
-        self.portfolio.funds.credit(amount)
+    def sell_order(self, key: str, price: float, qty: int, order_type="LIMIT", **kwargs):
+        """Mock Sell Order with strict Upstox API response simulation."""
+        
         if key not in self.portfolio.positions.keys():
-            logger.warning(f"Sell order not placed as no positions are open for {key}.")
-            return -1
-        qty += self.portfolio.positions[key].day_sell_quantity
+            logger.warning(f"SimBroker [EXCHANGE REJECT]: No open position found for {key}.")
+            return {
+                "status": "error", 
+                "errors": [{"message": "No open position to square off", "errorCode": "UDYN02"}]
+            }
+            
+        amount = price * qty
+        order_id = f"SIM_{randint(10000000, 99999999)}"
+        
+        # Credit gross amount
+        self.portfolio.funds.credit(amount)
         self.portfolio.positions[key].update_position(
             sell_price=price, day_sell_quantity=qty
         )
-        logger.info(f"{key} | Sell order placed succesfully for {qty} at {price}.")
+        
+        logger.info(f"SimBroker: {key} | SELL {order_type} EXECUTED for {qty} qty at ₹{price}.")
 
-        return 1
+        return {
+            "status": "success", 
+            "data": {"order_ids": [order_id]}
+        }
 
-    def cancel_order(self, id):
-        return super().cancel_order()
+    def cancel_order(self, id: str):
+        logger.info(f"SimBroker: Order {id} cancelled.")
+        return {"status": "success", "data": {"order_id": id}}
 
-    def modify_order(self):
-        # Simulating does not make any order modifications
-        pass
-
-
+    def modify_order(self, id: str, **kwargs):
+        logger.info(f"SimBroker: Order {id} modified.")
+        return {"status": "success", "data": {"order_id": id}}
+    
 class LiveBroker(Broker):
 
     def __init__(self, client):
@@ -420,7 +440,7 @@ class LiveBroker(Broker):
         self.client : UpstoxClient = client
 
     def buy_order(
-        self, key: str, price: float, qty: int, sandbox: bool = False, **kwargs
+        self, key: str, price: float, qty: int, sandbox: bool = False, order_type='LIMIT', **kwargs
     ):
         return self.client.place_order(
             instrument_token=key,
@@ -428,13 +448,13 @@ class LiveBroker(Broker):
             quantity=qty,
             price=price,
             sandbox=sandbox,
-            order_type='LIMIT',
+            order_type=order_type,
             validity='IOC',
             **kwargs,
         )
 
     def sell_order(
-        self, key: str, price: float, qty: int, sandbox: bool = False, **kwargs
+        self, key: str, price: float, qty: int, sandbox: bool = False, order_type='LIMIT', **kwargs
     ):
         return self.client.place_order(
             instrument_token=key,
@@ -442,7 +462,7 @@ class LiveBroker(Broker):
             quantity=qty,
             price=price,
             sandbox=sandbox,
-            order_type="LIMIT",
+            order_type=order_type,
             validity="IOC",
             **kwargs,
         )

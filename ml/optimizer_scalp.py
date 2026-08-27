@@ -85,10 +85,15 @@ def fast_evaluate_unified(ce_indices, pe_indices, sl_atr, target_atr, trailing_s
     for sig in signals:
         start_idx, opt_type = sig
 
-        if start_idx <= last_exit_idx:
+        # SHIFT TO THE 5M CLOSE
+        signal_idx = start_idx + 4
+        if signal_idx >= len(DATES) or DATES[signal_idx] != DATES[start_idx]:
             continue
 
-        trade_date = DATES[start_idx]
+        if signal_idx <= last_exit_idx:
+            continue
+
+        trade_date = DATES[signal_idx]
 
         if trade_date != current_date:
             current_date = trade_date
@@ -103,21 +108,19 @@ def fast_evaluate_unified(ce_indices, pe_indices, sl_atr, target_atr, trailing_s
         prices_close = CE_CLOSE if opt_type == 0 else PE_CLOSE
         atrs = CE_ATR if opt_type == 0 else PE_ATR
 
-        # --- LIMIT ORDER LOGIC ---
-        limit_price = prices_close[start_idx] # Limit is the 5-min close price
+        # --- LIMIT ORDER PENETRATION LOGIC ---
+        limit_price = prices_close[signal_idx] 
         fill_price = 0.0
-        curr_idx = start_idx
+        curr_idx = signal_idx
         
-        # Give the market 3 minutes to fill the limit order
         for offset in range(1, 4): 
-            check_idx = start_idx + offset
+            check_idx = signal_idx + offset
             if check_idx < len(DATES) and DATES[check_idx] == trade_date:
-                if prices_low[check_idx] <= limit_price:
+                if prices_low[check_idx] < limit_price: # Strict fill
                     fill_price = limit_price
                     curr_idx = check_idx
                     break
                     
-        # If order wasn't filled within the 3-minute window, cancel trade
         if fill_price == 0.0:
             continue
             
@@ -125,26 +128,23 @@ def fast_evaluate_unified(ce_indices, pe_indices, sl_atr, target_atr, trailing_s
         highest_seen = entry_price
         current_lot_size = get_nifty_lot_size(trade_date)
         
-        # Calculate dynamic targets based on fill
-        current_atr = atrs[start_idx]
+        current_atr = atrs[signal_idx]
         sl = entry_price - (current_atr * sl_atr)
         tg = entry_price + (current_atr * target_atr)
         trail_dist = current_atr * trailing_sl_atr
 
         exit_price = 0.0
 
-        # --- 1-MINUTE STEP-THROUGH RESOLUTION ---
         while curr_idx < len(DATES) and DATES[curr_idx] == trade_date:
             high = prices_high[curr_idx]
             low = prices_low[curr_idx]
 
-            # Pessimistic Check: Stop loss evaluated first
             if low <= sl:
-                exit_price = sl - SLIPPAGE # Pay slippage on market exit
+                exit_price = sl - SLIPPAGE 
                 last_exit_idx = curr_idx
                 break
             if high >= tg:
-                exit_price = tg # Limit targets have no slippage
+                exit_price = tg 
                 last_exit_idx = curr_idx
                 break
 
