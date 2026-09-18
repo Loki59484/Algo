@@ -5,7 +5,6 @@ Module containing custom functions exclusively used by the program.
 import pyarrow.parquet as pq
 from typing import Literal
 from pathlib import Path
-from telegram import Bot
 import pyarrow as pa
 import pandas as pd
 import threading
@@ -29,16 +28,6 @@ import time
 TELEGRAM_TOKEN = environ.get("TELEGRAM_TOKEN")
 CHAT_ID = environ.get("TELEGRAM_CHAT_ID")
 
-def send_telegram_update(message):
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-    response = post(url, json=payload)
-    return response.status_code == 200
 
 def generate_setup_code(secret_key: str):
     """

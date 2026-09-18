@@ -17,12 +17,12 @@ from rich.console import Console
 from rich.panel import Panel
 
 # Setup Paths
-ROOT_DIR = Path(__file__).resolve().parent.parent
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 # Import required config variables from your core methods
-from core.upstox_methods import (
+from algo.core.upstox_methods import (
     API_KEY,
     API_SECRET,
     MOBILE_NUM,

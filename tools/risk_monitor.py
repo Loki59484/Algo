@@ -10,8 +10,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from core.methods import ZMQErrorLogger, start_heartbeat, TelegramHandler, TELEGRAM_TOKEN, CHAT_ID
-from core.upstox_methods import UpstoxClient, logger
+from algo.core.methods import ZMQErrorLogger, start_heartbeat, TelegramHandler, TELEGRAM_TOKEN, CHAT_ID
+from algo.core.upstox_methods import UpstoxClient, logger
 from planner import Planner
 from tools.charges_calculator import charges_calculator
 

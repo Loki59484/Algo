@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "algo"
+version = "0.1.0"
+description = "Algorithmic trading system"
+requires-python = ">=3.12"
+
+dependencies = [
+    "dearpygui",
+    "dearpygui_ext",
+    "gspread",
+    "gspread_dataframe",
+    "joblib",
+    "matplotlib",
+    "num2words",
+    "numpy",
+    "pandas",
+    "pandas-ta-classic",
+    "playwright",
+    "protobuf",
+    "pyarrow",
+    "pydantic",
+    "python-dotenv",
+    "pyzmq",
+    "quantstats",
+    "requests",
+    "screeninfo",
+    "textual",
+    "textual-dev",
+    "textual_pandas",
+    "textual_plotext",
+    "tqdm",
+    "websockets",
+    "optuna",
+    "pyotp",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -14,8 +14,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from core.upstox_methods import DATA_DIR, UpstoxClient
-from core.datatypes import FinancialState
+from algo.core.upstox_methods import DATA_DIR, UpstoxClient
+from algo.core.datatypes import FinancialState
 
 logger = logging.getLogger(__name__)
 
@@ -146,11 +146,11 @@ class Planner:
     def _generate_compound_plan(self, gross_target: float, capital: float, base_multiplier: float) -> pd.DataFrame:
         """Generates the day-by-day mathematical trading plan using volatility-adjusted multipliers."""
         VOLATILITY_WEIGHTS = {
-            0: 1.2,  
-            1: 1.5,   
-            2: 1.2,  
-            3: 1.5,   
-            4: 0.9,
+            0: 1,  
+            1: 1,   
+            2: 1,  
+            3: 1,   
+            4: 1,
         }
 
         n = 0

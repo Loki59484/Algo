@@ -614,7 +614,7 @@ class BulkSimulator(BaseEngine):
         report_file = (
             LOG_DIR
             / "reports"
-            / f"trade_report_{datetime.now().strftime("%d%m%Y_%H%M%S")}.csv"
+            / f"trade_report_{datetime.now().strftime('%d%m%Y_%H%M%S')}.csv"
         )
         report_file.parent.mkdir(parents=True, exist_ok=True)
         report.to_csv(report_file)

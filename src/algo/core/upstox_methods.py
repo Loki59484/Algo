@@ -32,7 +32,7 @@ subprocess.run("cls" if os.name == "nt" else "clear")
 # SETTING UP DIRECTORIES
 
 CORE_DIR = Path(__file__).resolve().parent
-ROOT_DIR = CORE_DIR.parent
+ROOT_DIR = CORE_DIR.parent.parent.parent
 ENV_PATH = ROOT_DIR / ".env"
 CONFIG_DIR = ROOT_DIR / "config"
 SECRETS_PATH = ROOT_DIR / ".secrets"
@@ -50,12 +50,13 @@ EXPIRED_CACHE_DIR = (
 )
 EXPIRED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 ARCHIVE_PATH.parent.mkdir(parents=True, exist_ok=True)
+
 # IMPORT CUSTOM MODULES
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
-from core.protobuffs import MarketDataFeedV3_pb2 as pb
-from core.datatypes import Order, Tick
-from core.methods import to_ist
+from algo.core.protobuffs import MarketDataFeedV3_pb2 as pb
+from algo.core.datatypes import Order, Tick
+from algo.core.methods import to_ist
 
 # STATIC VARIABLES
 if not ENV_PATH.exists():

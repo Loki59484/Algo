@@ -5,8 +5,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from core.upstox_methods import UpstoxClient# Replace with your actual import
-from core.methods import calculate_trade_charges
+from algo.core.upstox_methods import UpstoxClient# Replace with your actual import
+from algo.core.methods import calculate_trade_charges
 
 def charges_calculator():
     ustox = UpstoxClient()
