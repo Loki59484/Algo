@@ -4,6 +4,7 @@ src/algo/__main__.py
 src/algo.egg-info/PKG-INFO
 src/algo.egg-info/SOURCES.txt
 src/algo.egg-info/dependency_links.txt
+src/algo.egg-info/entry_points.txt
 src/algo.egg-info/requires.txt
 src/algo.egg-info/top_level.txt
 src/algo/config/__init__.py
@@ -12,6 +13,7 @@ src/algo/core/__init__.py
 src/algo/core/anatomy.py
 src/algo/core/datatypes.py
 src/algo/core/login.py
+src/algo/core/master.py
 src/algo/core/methods.py
 src/algo/core/upstox_methods.py
 src/algo/core/protobuffs/MarketDataFeedV3_pb2.py
@@ -21,3 +23,4 @@ src/algo/ml/optimizer.py
 src/algo/ml/optimizer_scalp.py
 src/algo/ml/tester.py
 src/algo/ml/tester_scalp.py
+tests/test_instrument.py

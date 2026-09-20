@@ -229,7 +229,7 @@ class UpstoxAuthenticator:
         console.print(f"Token expires in 30 days on: [yellow]{sandbox_expiry}[/yellow]")
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="Upstox Authentication Manager")
     parser.add_argument("--sandbox", action="store_true", help="Generate a Sandbox token instead of a Production token.")
     parser.add_argument("--show-browser", action="store_true", help="Launch Playwright without headless mode (useful for debugging).")
@@ -244,3 +244,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         console.print("\n[bold yellow]Login aborted by user.[/bold yellow]")
         sys.exit(0)
+
+if __name__ == "__main__":
+    main()

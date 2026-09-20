@@ -23,6 +23,49 @@ from core.datatypes import to_ist
 logger = logging.getLogger(__name__)
 ustox = UpstoxClient()
 
+import pandas as pd
+from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
+
+def download_cache(
+    client,
+    instrument_key: str,
+    from_date,
+    to_date,
+    out_path: Path,
+    is_expired: bool = True,
+    expiry=None
+) -> pd.DataFrame:
+    """
+    Downloads historical data from Upstox and saves it to a local Parquet cache file.
+    """
+    logger.info(f"Downloading cache for {instrument_key} to {out_path}")
+    
+    # Fetch data using your existing client logic
+    data = client.get_historical(
+        dtype="historical",
+        instrument_key=instrument_key,
+        from_date=from_date,
+        to_date=to_date,
+        is_expired=is_expired,
+        expiry_date=expiry
+    )
+    
+    if data is not None and not data.empty:
+        # Ensure the cache directory exists before saving
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        data.to_parquet(out_path, index=False)
+        logger.info(f"Successfully cached {len(data)} rows.")
+    else:
+        logger.warning(f"No data returned from Upstox for {instrument_key}.")
+        data = pd.DataFrame()  # Return an empty DataFrame to prevent downstream crashes
+        
+    return data
+
+
+
 def historical(key, from_date, to_date, isexpired=False, expiry=None):
     if isexpired and expiry is None and "INDEX" not in key:
         raise ValueError(f"Must provide the expiry date for expired instrument {key}")

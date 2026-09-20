@@ -40,3 +40,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+
+[project.scripts]
+algo-login = "algo.core.login:main"
