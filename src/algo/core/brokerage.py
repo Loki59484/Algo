@@ -112,3 +112,47 @@ class BrokerageEngine:
             "GST": round(self.total_gst, 2),
             "Total": round(self.total_charges, 2)
         }
+
+
+
+
+if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+
+    # Ensure python can find your 'algo' package when running this file directly
+    ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+    if str(ROOT_DIR) not in sys.path:
+        sys.path.insert(0, str(ROOT_DIR))
+
+    from algo.core.upstox_methods import UpstoxClient
+    from algo.core.datatypes import Order
+
+    print("Fetching today's completed trades from Upstox...")
+    client = UpstoxClient()
+    engine = BrokerageEngine()
+
+    try:
+        order_book = client.get_order_book()
+        
+        # Filter strictly for executed trades
+        completed_orders = [o for o in order_book if o.get("status") == "complete"]
+
+        if not completed_orders:
+            print("No completed trades found for today.")
+        else:
+            for raw_order in completed_orders:
+                order = Order.parse(raw_order)
+                
+                # Note: The engine defaults to instrument='options' and trade_type='intraday'
+                # If you trade equities, you can map order.product to the respective parameters here
+                engine.add_charge(order)
+
+            print("\n--- Today's Charges Breakdown ---")
+            summary = engine.summary
+            print(f"Total trades: {len(completed_orders)}")
+            for fee_type, amount in summary.items():
+                print(f"{fee_type:<20}: ₹{amount:.2f}")
+
+    except Exception as e:
+        print(f"Failed to calculate charges: {e}")
