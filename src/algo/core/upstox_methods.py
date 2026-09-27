@@ -28,40 +28,46 @@ import os
 import io
 
 subprocess.run("cls" if os.name == "nt" else "clear")
+import os
+import subprocess
+import threading
+import logging
+from datetime import datetime
+from dotenv import load_dotenv
 
-# SETTING UP DIRECTORIES
-
-CORE_DIR = Path(__file__).resolve().parent
-ROOT_DIR = CORE_DIR.parent.parent.parent
-ENV_PATH = ROOT_DIR / ".env"
-CONFIG_DIR = ROOT_DIR / "config"
-SECRETS_PATH = ROOT_DIR / ".secrets"
-TOKEN_FILE = SECRETS_PATH / "access_token.json"
-SANDBOX_TOKEN_FILE = SECRETS_PATH / "sandbox_access_token.json"
-DATA_DIR = ROOT_DIR / "data"
-LOG_DIR = ROOT_DIR / "logs"
-ARCHIVE_PATH = (
-    LOG_DIR / "archives" / f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-)
-LOG_FILE = LOG_DIR / "logs.log"
-_HOLIDAY_CACHE: dict[int, dict[str, str] | None] = {}
-EXPIRED_CACHE_DIR = (
-    Path(__file__).resolve().parent / "data" / "cache" / "expired_instruments"
-)
-EXPIRED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-ARCHIVE_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-# IMPORT CUSTOM MODULES
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
 from algo.core.protobuffs import MarketDataFeedV3_pb2 as pb
 from algo.core.datatypes import Order, Tick
 from algo.core.methods import to_ist
 
-# STATIC VARIABLES
-if not ENV_PATH.exists():
-    os.environ
-load_dotenv(dotenv_path=ENV_PATH)
+# 1. IMPORT CENTRALIZED PATHS
+from algo.core.config import (
+    ENV_FILE,
+    SECRETS_DIR,
+    DATA_DIR,
+    LOGS_DIR,
+    CACHE_DIR
+)
+
+subprocess.run("cls" if os.name == "nt" else "clear")
+
+# 2. SETTING UP DYNAMIC FILES (No relative __file__ calculations)
+TOKEN_FILE = SECRETS_DIR / "access_token.json"
+SANDBOX_TOKEN_FILE = SECRETS_DIR / "sandbox_access_token.json"
+
+ARCHIVE_DIR = LOGS_DIR / "archives"
+ARCHIVE_PATH = ARCHIVE_DIR / f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+LOG_FILE = LOGS_DIR / "logs.log"
+
+_HOLIDAY_CACHE: dict[int, dict[str, str] | None] = {}
+EXPIRED_CACHE_DIR = CACHE_DIR / "expired_instruments"
+
+EXPIRED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+if ENV_FILE.exists():
+    load_dotenv(dotenv_path=ENV_FILE)
+
 API_KEY = os.getenv("UPSTOX_API_KEY")
 API_SECRET = os.getenv("UPSTOX_API_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI")
@@ -69,17 +75,15 @@ MOBILE_NUM = os.getenv("MOBILE_NUMBER")
 ALGO_NAME = os.getenv("ALGO_NAME")
 AWS_TAILSCALE_IP = os.getenv("AWS_TAILSCALE_IP", None)
 
-# LOGGING CONFIGURATION
-
+# 6. LOGGING CONFIGURATION
 logging.getLogger("asyncio").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logger = logging.getLogger()
 
-# SET LOGGING LEVEL
-logging.basicConfig(level=logging.INFO)
-
 if logger.hasHandlers():
     logger.handlers.clear()
+
+logging.basicConfig(level=logging.INFO)
 
 formatter = logging.Formatter(
     "%(asctime)s | %(name)s | | %(levelname)s | [%(module)s.%(funcName)s:%(lineno)d] | %(message)s"
@@ -89,7 +93,6 @@ formatter = logging.Formatter(
 archive_handler = logging.FileHandler(ARCHIVE_PATH)
 archive_handler.setFormatter(formatter)
 logger.addHandler(archive_handler)
-
 
 # HANDLER TO STORE LOG OF ONLY THE LATEST RUN
 latest_handler = logging.FileHandler(LOG_FILE, mode="w")
@@ -104,7 +107,7 @@ console_handler.setLevel(logging.ERROR)
 logger.addHandler(console_handler)
 
 api_lock = threading.Lock()
-# ------------------------------------------------------------#
+# ----------------------------------------
 
 logger = logging.getLogger(__name__)
 
